@@ -9,6 +9,7 @@ description=Flashpoint Campaigns Game Map Building Tool
 version=0.1
 author=Andrew Spearin / On Target Simulations
 email=aspearin@ontargetsimulations.com
+supportsQt6=True
 
 about=Pick AOI & CRS → 2) Build 500 m hex grid + helper layers → 3) (Optional) bring in OSM and normalize tags → 4) (Optional) classify hexes (centroid/slice/majority) → 5) (Optional) align linework (snap/trace) → 6) Mosaic Mode for manual painting or move/copy into styled layers → 7) Export PNG at exact dimensions (128 dpi) aligned to the hex grid. Smart defaults: project snapping in px, auto spatial indexes, long steps run as tasks. Built for non-experts with a guided UI; power users get direct Processing hooks.
 

@@ -21,15 +21,36 @@
  *                                                                         *
  ***************************************************************************/
 """
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt
+import os, json
+from qgis.PyQt.QtCore import Qt, QSettings, QLocale, QTranslator, QCoreApplication
+from qgis.PyQt.QtWidgets import QAction, QDockWidget, QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QAction
+from qgis.core import QgsProject
+from qgis.utils import iface
+
 # Initialize Qt resources from file resources.py
-from .resources import *
+# from .resources import *
 
 # Import the code for the DockWidget
 from .hexmosaic_dockwidget import HexMosaicDockWidget
 import os.path
+
+# --- quick helpers you can replace later ---
+def ensure_project_snapping():
+    s = iface.mapCanvas().snappingUtils().config()
+    s.setMode(s.AllLayers)
+    s.setToleranceUnit(s.Pixels)
+    s.setTolerance(20)
+    s.setIntersectionSnapping(True)
+    iface.mapCanvas().snappingUtils().setConfig(s)
+
+def run_build_grid_stub():
+    ensure_project_snapping()
+    iface.messageBar().pushInfo("HexMosaic", "Build 500 m Grid (stub) — wired.")
+    # TODO: call native:creategrid + helpers here
+
+def run_mosaic_mode_stub():
+    iface.messageBar().pushInfo("HexMosaic", "Mosaic Mode (stub) — wired.")
 
 
 class HexMosaic:
@@ -50,7 +71,9 @@ class HexMosaic:
         self.plugin_dir = os.path.dirname(__file__)
 
         # initialize locale
-        locale = QSettings().value('locale/userLocale')[0:2]
+        loc = QSettings().value('locale/userLocale', '')
+        locale = (loc or QLocale.system().name())[:2]
+
         locale_path = os.path.join(
             self.plugin_dir,
             'i18n',
@@ -167,7 +190,7 @@ class HexMosaic:
     def initGui(self):
         """Create the menu entries and toolbar icons inside the QGIS GUI."""
 
-        icon_path = ':/plugins/hexmosaic/icon.png'
+        icon_path = ''
         self.add_action(
             icon_path,
             text=self.tr(u'Build a Flashpoint Campaigns game map'),
@@ -177,21 +200,16 @@ class HexMosaic:
     #--------------------------------------------------------------------------
 
     def onClosePlugin(self):
-        """Cleanup necessary items here when plugin dockwidget is closed"""
-
-        #print "** CLOSING HexMosaic"
-
-        # disconnects
-        self.dockwidget.closingPlugin.disconnect(self.onClosePlugin)
-
-        # remove this statement if dockwidget is to remain
-        # for reuse if plugin is reopened
-        # Commented next statement since it causes QGIS crashe
-        # when closing the docked window:
-        # self.dockwidget = None
-
+        """Cleanup when the dock closes."""
+        try:
+            self.dockwidget.closingPlugin.disconnect(self.onClosePlugin)
+        except Exception:
+            pass
         self.pluginIsActive = False
-
+        if self.dockwidget is not None:
+            self.iface.removeDockWidget(self.dockwidget)
+            self.dockwidget.deleteLater()
+            self.dockwidget = None
 
     def unload(self):
         """Removes the plugin menu item and icon from QGIS GUI."""
@@ -209,24 +227,20 @@ class HexMosaic:
     #--------------------------------------------------------------------------
 
     def run(self):
-        """Run method that loads and starts the plugin"""
+        """Load (or reload) the dock and show it fresh each time."""
+        # Always rebuild the dock so UI/code changes take effect
+        if self.dockwidget is not None:
+            self.iface.removeDockWidget(self.dockwidget)
+            self.dockwidget.deleteLater()
+            self.dockwidget = None
 
-        if not self.pluginIsActive:
-            self.pluginIsActive = True
+        # Create a new dock instance (this is your code-only dock with buttons)
+        self.dockwidget = HexMosaicDockWidget()
+        self.dockwidget.closingPlugin.connect(self.onClosePlugin)
 
-            #print "** STARTING HexMosaic"
+        # Show it
+        self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dockwidget)
+        self.dockwidget.show()
 
-            # dockwidget may not exist if:
-            #    first run of plugin
-            #    removed on close (see self.onClosePlugin method)
-            if self.dockwidget == None:
-                # Create the dockwidget (after translation) and keep reference
-                self.dockwidget = HexMosaicDockWidget()
+        self.pluginIsActive = True
 
-            # connect to provide cleanup on closing of dockwidget
-            self.dockwidget.closingPlugin.connect(self.onClosePlugin)
-
-            # show the dockwidget
-            # TODO: fix to allow choice of dock location
-            self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dockwidget)
-            self.dockwidget.show()
