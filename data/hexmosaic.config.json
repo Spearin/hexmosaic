@@ -1,0 +1,1606 @@
+{
+  "schema_version": 1,
+  "units": {
+    "hex_size_m": 500
+  },
+  "thresholds": {
+    "polygon_coverage_majority": 0.6,
+    "min_polygon_area_hex_fraction": 0.25,
+    "snap_tolerance_px": 20
+  },
+  "priority_order": [
+    "Water",
+    "Urban",
+    "Industrial",
+    "Marsh",
+    "Forest",
+    "Fields",
+    "Bare",
+    "Mixed"
+  ],
+  "osm_to_classes": {
+    "polygons": [],
+    "lines": []
+  },
+  "mosaic_rules": {
+    "tile_assignment": {
+      "method": "centroid_majority",
+      "majority_weight": 0.6,
+      "centroid_weight": 0.4
+    },
+    "edge_features": {
+      "use_edge_graph": true,
+      "snap_to": "edge_or_centroid",
+      "promote_major_river_to_water_tile": true
+    },
+    "road_rules": {
+      "snap_roads_to": "centroids",
+      "allow_diagonals": false,
+      "min_road_length_m": 150
+    }
+  },
+  "classes": [
+    {
+      "name": "Elevation 1",
+      "category": "elevation",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          163,
+          174,
+          105
+        ],
+        "rgb_high": [
+          165,
+          176,
+          107
+        ]
+      },
+      "description": "Elevation 1",
+      "aliases": []
+    },
+    {
+      "name": "Elevation 2",
+      "category": "elevation",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          131,
+          141,
+          80
+        ],
+        "rgb_high": [
+          133,
+          143,
+          82
+        ]
+      },
+      "description": "Elevation 2",
+      "aliases": []
+    },
+    {
+      "name": "Elevation 3",
+      "category": "elevation",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          108,
+          116,
+          63
+        ],
+        "rgb_high": [
+          110,
+          118,
+          65
+        ]
+      },
+      "description": "Elevation 3",
+      "aliases": []
+    },
+    {
+      "name": "Elevation 4",
+      "category": "elevation",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          85,
+          93,
+          45
+        ],
+        "rgb_high": [
+          87,
+          95,
+          47
+        ]
+      },
+      "description": "Elevation 4",
+      "aliases": []
+    },
+    {
+      "name": "Elevation 5",
+      "category": "elevation",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          66,
+          73,
+          30
+        ],
+        "rgb_high": [
+          68,
+          75,
+          32
+        ]
+      },
+      "description": "Elevation 5",
+      "aliases": []
+    },
+    {
+      "name": "Elevation 6",
+      "category": "elevation",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          84,
+          74,
+          48
+        ],
+        "rgb_high": [
+          86,
+          76,
+          50
+        ]
+      },
+      "description": "Elevation 6",
+      "aliases": []
+    },
+    {
+      "name": "Elevation 7",
+      "category": "elevation",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          108,
+          98,
+          67
+        ],
+        "rgb_high": [
+          110,
+          101,
+          69
+        ]
+      },
+      "description": "Elevation 7",
+      "aliases": []
+    },
+    {
+      "name": "Elevation 8",
+      "category": "elevation",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          136,
+          124,
+          89
+        ],
+        "rgb_high": [
+          138,
+          126,
+          91
+        ]
+      },
+      "description": "Elevation 8",
+      "aliases": []
+    },
+    {
+      "name": "Elevation 9",
+      "category": "elevation",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          167,
+          153,
+          113
+        ],
+        "rgb_high": [
+          169,
+          155,
+          115
+        ]
+      },
+      "description": "Elevation 9",
+      "aliases": []
+    },
+    {
+      "name": "Elevation 10",
+      "category": "elevation",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          202,
+          188,
+          143
+        ],
+        "rgb_high": [
+          204,
+          190,
+          145
+        ]
+      },
+      "description": "Elevation 10",
+      "aliases": []
+    },
+    {
+      "name": "Elevation 11",
+      "category": "elevation",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          223,
+          203,
+          158
+        ],
+        "rgb_high": [
+          225,
+          205,
+          160
+        ]
+      },
+      "description": "Elevation 11",
+      "aliases": []
+    },
+    {
+      "name": "Elevation 12",
+      "category": "elevation",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          238,
+          218,
+          183
+        ],
+        "rgb_high": [
+          240,
+          220,
+          185
+        ]
+      },
+      "description": "Elevation 12",
+      "aliases": []
+    },
+    {
+      "name": "Elevation 13",
+      "category": "elevation",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          243,
+          228,
+          198
+        ],
+        "rgb_high": [
+          245,
+          230,
+          200
+        ]
+      },
+      "description": "Elevation 13",
+      "aliases": []
+    },
+    {
+      "name": "Elevation 14",
+      "category": "elevation",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          248,
+          238,
+          208
+        ],
+        "rgb_high": [
+          250,
+          240,
+          210
+        ]
+      },
+      "description": "Elevation 14",
+      "aliases": []
+    },
+    {
+      "name": "Elevation 15",
+      "category": "elevation",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          253,
+          243,
+          213
+        ],
+        "rgb_high": [
+          255,
+          245,
+          215
+        ]
+      },
+      "description": "Elevation 15",
+      "aliases": []
+    },
+    {
+      "name": "Elevation Unknown",
+      "category": "elevation",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 0.02
+      },
+      "style": {
+        "rgb_low": [
+          0,
+          0,
+          0
+        ],
+        "rgb_high": [
+          255,
+          255,
+          255
+        ]
+      },
+      "description": "everything not already found",
+      "aliases": []
+    },
+    {
+      "name": "Farm Fields",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          191,
+          167,
+          139
+        ],
+        "rgb_high": [
+          195,
+          171,
+          143
+        ]
+      },
+      "description": "Fields",
+      "aliases": []
+    },
+    {
+      "name": "Marsh",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          126,
+          126,
+          253
+        ],
+        "rgb_high": [
+          130,
+          130,
+          255
+        ]
+      },
+      "description": "Marsh/swamp, hard to traverse",
+      "aliases": []
+    },
+    {
+      "name": "Orchard/Vineyard",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          182,
+          72,
+          237
+        ],
+        "rgb_high": [
+          184,
+          74,
+          239
+        ]
+      },
+      "description": "Short, well spaced trees / vines",
+      "aliases": []
+    },
+    {
+      "name": "Shrub",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          168,
+          186,
+          20
+        ],
+        "rgb_high": [
+          172,
+          192,
+          24
+        ]
+      },
+      "description": "Shrub (low bushes)",
+      "aliases": []
+    },
+    {
+      "name": "Heavy Woods",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 4.0
+      },
+      "style": {
+        "rgb_low": [
+          42,
+          55,
+          21
+        ],
+        "rgb_high": [
+          46,
+          59,
+          25
+        ]
+      },
+      "description": "Tall, dense, trees and lots of brush",
+      "aliases": []
+    },
+    {
+      "name": "Hamlet",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          253,
+          225,
+          0
+        ],
+        "rgb_high": [
+          255,
+          229,
+          2
+        ]
+      },
+      "description": "Building aligned with road",
+      "aliases": []
+    },
+    {
+      "name": "Urban",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.1
+      },
+      "style": {
+        "rgb_low": [
+          233,
+          157,
+          40
+        ],
+        "rgb_high": [
+          243,
+          167,
+          50
+        ]
+      },
+      "description": "Buildings with some space around them",
+      "aliases": []
+    },
+    {
+      "name": "Highrise",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.1
+      },
+      "style": {
+        "rgb_low": [
+          252,
+          0,
+          0
+        ],
+        "rgb_high": [
+          255,
+          2,
+          2
+        ]
+      },
+      "description": "Tall, large, buildings",
+      "aliases": []
+    },
+    {
+      "name": "Industrial/Commercial",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.1
+      },
+      "style": {
+        "rgb_low": [
+          67,
+          54,
+          67
+        ],
+        "rgb_high": [
+          71,
+          58,
+          71
+        ]
+      },
+      "description": "Large industrial/commercial buildings",
+      "aliases": []
+    },
+    {
+      "name": "Greenhouse",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.1
+      },
+      "style": {
+        "rgb_low": [
+          7,
+          188,
+          10
+        ],
+        "rgb_high": [
+          9,
+          190,
+          12
+        ]
+      },
+      "description": "Greenhouses ",
+      "aliases": []
+    },
+    {
+      "name": "Refinery",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.1
+      },
+      "style": {
+        "rgb_low": [
+          107,
+          54,
+          67
+        ],
+        "rgb_high": [
+          111,
+          58,
+          71
+        ]
+      },
+      "description": "Refinery, large oil storage",
+      "aliases": []
+    },
+    {
+      "name": "Container Terminal",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.1
+      },
+      "style": {
+        "rgb_low": [
+          127,
+          54,
+          67
+        ],
+        "rgb_high": [
+          131,
+          58,
+          71
+        ]
+      },
+      "description": "Harbor area with stacks of sea containers",
+      "aliases": []
+    },
+    {
+      "name": "Major River",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 15.0
+      },
+      "style": {
+        "rgb_low": [
+          44,
+          0,
+          220
+        ],
+        "rgb_high": [
+          46,
+          1,
+          222
+        ]
+      },
+      "description": "Water obstacle (hex wide), extra weight to mask out roads",
+      "aliases": []
+    },
+    {
+      "name": "Major Lake",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 15.0
+      },
+      "style": {
+        "rgb_low": [
+          0,
+          159,
+          220
+        ],
+        "rgb_high": [
+          3,
+          161,
+          222
+        ]
+      },
+      "description": "Water obstacle (hex wide), extra weight to mask out roads",
+      "aliases": []
+    },
+    {
+      "name": "Sea",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 20.0
+      },
+      "style": {
+        "rgb_low": [
+          47,
+          127,
+          159
+        ],
+        "rgb_high": [
+          49,
+          129,
+          161
+        ]
+      },
+      "description": "Water obstacle (hex wide), with wave height",
+      "aliases": []
+    },
+    {
+      "name": "Highway",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 0.1
+      },
+      "style": {
+        "rgb_low": [
+          253,
+          113,
+          0
+        ],
+        "rgb_high": [
+          255,
+          115,
+          2
+        ]
+      },
+      "description": "Wide, straight, open multi-lane road",
+      "aliases": []
+    },
+    {
+      "name": "Primary road",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 0.1
+      },
+      "style": {
+        "rgb_low": [
+          249,
+          215,
+          52
+        ],
+        "rgb_high": [
+          251,
+          217,
+          54
+        ]
+      },
+      "description": "Wide multi-lane road",
+      "aliases": []
+    },
+    {
+      "name": "Secondary Road",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 0.1
+      },
+      "style": {
+        "rgb_low": [
+          190,
+          190,
+          190
+        ],
+        "rgb_high": [
+          194,
+          194,
+          194
+        ]
+      },
+      "description": "Narrow road",
+      "aliases": []
+    },
+    {
+      "name": "Tertiary Road",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 0.1
+      },
+      "style": {
+        "rgb_low": [
+          173,
+          153,
+          62
+        ],
+        "rgb_high": [
+          177,
+          157,
+          66
+        ]
+      },
+      "description": "Dirt road",
+      "aliases": []
+    },
+    {
+      "name": "Trail",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 0.1
+      },
+      "style": {
+        "rgb_low": [
+          238,
+          222,
+          62
+        ],
+        "rgb_high": [
+          242,
+          226,
+          66
+        ]
+      },
+      "description": "Trail, traversable at low speed only",
+      "aliases": []
+    },
+    {
+      "name": "Rail road",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 0.1
+      },
+      "style": {
+        "rgb_low": [
+          253,
+          83,
+          253
+        ],
+        "rgb_high": [
+          255,
+          87,
+          255
+        ]
+      },
+      "description": "Rail road tracks",
+      "aliases": []
+    },
+    {
+      "name": "Air strip",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 0.1
+      },
+      "style": {
+        "rgb_low": [
+          158,
+          176,
+          253
+        ],
+        "rgb_high": [
+          160,
+          178,
+          255
+        ]
+      },
+      "description": "Wide flat open air strip",
+      "aliases": []
+    },
+    {
+      "name": "Ignore Lake Side",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 0.0
+      },
+      "style": {
+        "rgb_low": [
+          0,
+          32,
+          220
+        ],
+        "rgb_high": [
+          3,
+          34,
+          222
+        ]
+      },
+      "description": "Prevent counting these as Mixed",
+      "aliases": []
+    },
+    {
+      "name": "Ignore Minor River",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 0.0
+      },
+      "style": {
+        "rgb_low": [
+          44,
+          66,
+          247
+        ],
+        "rgb_high": [
+          46,
+          70,
+          251
+        ]
+      },
+      "description": "Prevent counting these as Mixed",
+      "aliases": []
+    },
+    {
+      "name": "Ignore Stream",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 0.0
+      },
+      "style": {
+        "rgb_low": [
+          123,
+          159,
+          248
+        ],
+        "rgb_high": [
+          125,
+          161,
+          250
+        ]
+      },
+      "description": "Prevent counting these as Mixed",
+      "aliases": []
+    },
+    {
+      "name": "Beach",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          253,
+          253,
+          191
+        ],
+        "rgb_high": [
+          255,
+          255,
+          193
+        ]
+      },
+      "description": "Beach",
+      "aliases": []
+    },
+    {
+      "name": "Dry Lake",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          250,
+          250,
+          191
+        ],
+        "rgb_high": [
+          252,
+          252,
+          193
+        ]
+      },
+      "description": "Dry lake",
+      "aliases": []
+    },
+    {
+      "name": "Rocky",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 5.0
+      },
+      "style": {
+        "rgb_low": [
+          240,
+          10,
+          10
+        ],
+        "rgb_high": [
+          242,
+          12,
+          12
+        ]
+      },
+      "description": "Rocky terrain impassable to vehicles",
+      "aliases": []
+    },
+    {
+      "name": "Rough",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          240,
+          10,
+          120
+        ],
+        "rgb_high": [
+          242,
+          12,
+          122
+        ]
+      },
+      "description": "Rough terrain but passable to vehicles",
+      "aliases": []
+    },
+    {
+      "name": "Mixed",
+      "category": "hex",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 0.005
+      },
+      "style": {
+        "rgb_low": [
+          0,
+          0,
+          0
+        ],
+        "rgb_high": [
+          255,
+          255,
+          255
+        ]
+      },
+      "description": "Sparse mix of trees and buildings",
+      "aliases": []
+    },
+    {
+      "name": "Highway",
+      "category": "road",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 2.0
+      },
+      "style": {
+        "rgb_low": [
+          253,
+          113,
+          0
+        ],
+        "rgb_high": [
+          255,
+          115,
+          2
+        ]
+      },
+      "description": "Wide, straight, open multi-lane road",
+      "aliases": []
+    },
+    {
+      "name": "Primary road",
+      "category": "road",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          249,
+          215,
+          52
+        ],
+        "rgb_high": [
+          251,
+          217,
+          54
+        ]
+      },
+      "description": "Wide multi-lane road",
+      "aliases": []
+    },
+    {
+      "name": "Secondary Road",
+      "category": "road",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          190,
+          190,
+          190
+        ],
+        "rgb_high": [
+          194,
+          194,
+          194
+        ]
+      },
+      "description": "Narrow road",
+      "aliases": []
+    },
+    {
+      "name": "Tertiary Road",
+      "category": "road",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          173,
+          153,
+          62
+        ],
+        "rgb_high": [
+          177,
+          157,
+          66
+        ]
+      },
+      "description": "Dirt road",
+      "aliases": []
+    },
+    {
+      "name": "Trail",
+      "category": "road",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 0.7
+      },
+      "style": {
+        "rgb_low": [
+          238,
+          222,
+          62
+        ],
+        "rgb_high": [
+          242,
+          226,
+          66
+        ]
+      },
+      "description": "Trail, traversable at low speed only",
+      "aliases": []
+    },
+    {
+      "name": "Rail road",
+      "category": "road",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 0.5
+      },
+      "style": {
+        "rgb_low": [
+          253,
+          83,
+          253
+        ],
+        "rgb_high": [
+          255,
+          87,
+          255
+        ]
+      },
+      "description": "Rail road tracks",
+      "aliases": []
+    },
+    {
+      "name": "Air strip",
+      "category": "road",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 2.0
+      },
+      "style": {
+        "rgb_low": [
+          158,
+          176,
+          253
+        ],
+        "rgb_high": [
+          160,
+          178,
+          255
+        ]
+      },
+      "description": "Wide flat open air strip",
+      "aliases": []
+    },
+    {
+      "name": "Steep slope",
+      "category": "slope",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          0,
+          0,
+          0
+        ],
+        "rgb_high": [
+          255,
+          255,
+          255
+        ]
+      },
+      "description": "Impassible steep slope for vehicles when delta exceeds height (m)",
+      "aliases": []
+    },
+    {
+      "name": "River Bank",
+      "category": "edge",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          0,
+          62,
+          127
+        ],
+        "rgb_high": [
+          3,
+          64,
+          129
+        ]
+      },
+      "description": "River bank",
+      "aliases": []
+    },
+    {
+      "name": "Lake Side",
+      "category": "edge",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          0,
+          32,
+          220
+        ],
+        "rgb_high": [
+          3,
+          34,
+          222
+        ]
+      },
+      "description": "Lake bank",
+      "aliases": []
+    },
+    {
+      "name": "Minor River",
+      "category": "edge",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          44,
+          66,
+          247
+        ],
+        "rgb_high": [
+          46,
+          70,
+          251
+        ]
+      },
+      "description": "Wide water obstacle, can be bridged",
+      "aliases": []
+    },
+    {
+      "name": "Stream",
+      "category": "edge",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          123,
+          159,
+          248
+        ],
+        "rgb_high": [
+          125,
+          161,
+          250
+        ]
+      },
+      "description": "Narrow water obstacle, can be filled",
+      "aliases": []
+    },
+    {
+      "name": "Minor Lake",
+      "category": "edge",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          0,
+          159,
+          248
+        ],
+        "rgb_high": [
+          3,
+          161,
+          250
+        ]
+      },
+      "description": "Lake, too wide for bridge layer",
+      "aliases": []
+    },
+    {
+      "name": "Beach Line",
+      "category": "edge",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          253,
+          253,
+          127
+        ],
+        "rgb_high": [
+          255,
+          255,
+          129
+        ]
+      },
+      "description": "Beach line, allowing vehicles to disembark from landing craft",
+      "aliases": []
+    },
+    {
+      "name": "Levee",
+      "category": "edge",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          253,
+          253,
+          222
+        ],
+        "rgb_high": [
+          255,
+          255,
+          226
+        ]
+      },
+      "description": "Levee, elevated strip surrounded by full hex water",
+      "aliases": []
+    },
+    {
+      "name": "Impassable",
+      "category": "edge",
+      "gameplay": {
+        "visibility": 0.0,
+        "cover": 0.0,
+        "mobility": 0.0,
+        "height_m": 0.0,
+        "scan_weight": 1.0
+      },
+      "style": {
+        "rgb_low": [
+          0,
+          253,
+          0
+        ],
+        "rgb_high": [
+          0,
+          255,
+          0
+        ]
+      },
+      "description": "Impassable edge for vehicles",
+      "aliases": []
+    }
+  ],
+  "outputs": {
+    "folders": {
+      "osm": "Layers/OSM",
+      "mosaic": "Layers/Mosaic"
+    },
+    "layer_names": {
+      "tiles": "Hex Tiles",
+      "edges": "Hex Grid Edges",
+      "vertices": "Intersection Helpers",
+      "centroids": "Centroid Helpers"
+    }
+  }
+}

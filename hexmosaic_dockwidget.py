@@ -5,17 +5,22 @@ Replaces Designer UI for now to avoid resource/Qt wiring issues.
 """
 import os
 import sys, subprocess
+import math
+import urllib.request
+import urllib.parse
+import json, shutil
 from qgis.utils import iface # pyright: ignore[reportMissingImports]
 from qgis.PyQt import QtCore, QtWidgets # pyright: ignore[reportMissingImports]
 from qgis.PyQt.QtCore import pyqtSignal, QVariant, Qt, QSettings # pyright: ignore[reportMissingImports]
 from qgis.PyQt.QtGui import QImage, QPainter # pyright: ignore[reportMissingImports]
 from qgis.core import ( # pyright: ignore[reportMissingImports]
-    QgsVectorLayer, QgsField, QgsFeature, QgsGeometry, QgsPointXY, QgsProject,
+    QgsVectorLayer, QgsRasterLayer, QgsCoordinateReferenceSystem, QgsField, QgsFeature, QgsGeometry, QgsPointXY, QgsProject,
     QgsVectorFileWriter, QgsSnappingConfig, QgsTolerance,
     QgsFillSymbol, QgsMarkerSymbol, QgsSingleSymbolRenderer,
     QgsFields, QgsWkbTypes, QgsLineSymbol,
     QgsUnitTypes, QgsLayoutSize, QgsLayoutPoint, QgsPrintLayout,
-    QgsLayoutItemMap, QgsLayoutExporter, QgsRectangle, QgsMapSettings, QgsMapRendererCustomPainterJob
+    QgsLayoutItemMap, QgsLayoutExporter, QgsRectangle, QgsMapSettings, QgsMapRendererCustomPainterJob,
+    QgsCoordinateTransform, QgsCoordinateTransformContext, QgsProviderRegistry
 )
 
 class HexMosaicSettingsDialog(QtWidgets.QDialog):
@@ -40,6 +45,7 @@ class HexMosaicSettingsDialog(QtWidgets.QDialog):
         self._qs = QSettings(s, q)  # was QtWidgets.QSettings(...)
         self.out_dir.setText(self._qs.value("paths/out_dir", "", type=str))
         self.styles_dir.setText(self._qs.value("paths/styles_dir", "", type=str))
+        
 
         def pick(le):
             d = QtWidgets.QFileDialog.getExistingDirectory(self, "Select folder", le.text() or os.path.expanduser("~"))
@@ -99,15 +105,65 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
 
         self.hex_scale_edit = QtWidgets.QLineEdit("500")
 
-        btn_save_setup = QtWidgets.QPushButton("Save Settings")
-        btn_gen_groups = QtWidgets.QPushButton("Generate Groups and Layers")
+        self.opentopo_key_edit = QtWidgets.QLineEdit()
+        self.opentopo_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)        
 
+        btn_save_setup = QtWidgets.QPushButton("Save Settings")
+        btn_reload_proj = QtWidgets.QPushButton("Reload Settings")
+        btn_gen_structure = QtWidgets.QPushButton("Generate Project Structure")
+
+        row_helpers = QtWidgets.QHBoxLayout()
+        self.btn_add_opentopo  = QtWidgets.QPushButton("Add OpenTopoMap to Reference")
+        self.btn_set_anchor    = QtWidgets.QPushButton("Set Anchor at Canvas Center")
+        self.btn_set_crs_utm   = QtWidgets.QPushButton("Set Project CRS from Anchor")
+        row_helpers.addWidget(self.btn_add_opentopo)
+        row_helpers.addWidget(self.btn_set_anchor)
+        row_helpers.addWidget(self.btn_set_crs_utm)
+
+        f1.addRow(btn_reload_proj)
         f1.addRow("Project name:", self.project_name_edit)
         f1.addRow("Author:", self.author_edit)
         f1.addRow("Project directory:", row_out)
         f1.addRow("Styles directory:", row_styles)
+        
+        # --- Config file UI (default → project override) ---
+        self.cfg_path_edit = QtWidgets.QLineEdit()
+        self.cfg_path_edit.setReadOnly(True)
+        self.cfg_source_label = QtWidgets.QLabel("source: –")
+
+        btn_cfg_browse = QtWidgets.QPushButton("Browse…")
+        btn_cfg_default = QtWidgets.QPushButton("Use Default")
+        btn_cfg_copy = QtWidgets.QPushButton("Copy Template to Project")
+
+        row_cfg1 = QtWidgets.QHBoxLayout()
+        row_cfg1.addWidget(self.cfg_path_edit)
+        row_cfg1.addWidget(btn_cfg_browse)
+
+        row_cfg2 = QtWidgets.QHBoxLayout()
+        row_cfg2.addWidget(self.cfg_source_label)
+        row_cfg2.addStretch(1)
+        row_cfg2.addWidget(btn_cfg_default)
+        row_cfg2.addWidget(btn_cfg_copy)
+
+        f1.addRow("Config file:", row_cfg1)
+        f1.addRow("", row_cfg2)
+
+        btn_cfg_browse.clicked.connect(self.browse_config_and_save)
+        btn_cfg_default.clicked.connect(self.use_default_config)
+        btn_cfg_copy.clicked.connect(lambda: self.copy_template_to_project(overwrite=False))
+
+        f1.addRow("OpenTopography API key:", self.opentopo_key_edit)
         f1.addRow("Hex scale (m):", self.hex_scale_edit)
-        f1.addRow(btn_save_setup, btn_gen_groups)
+        f1.addRow(row_helpers)
+        f1.addRow(btn_save_setup, btn_gen_structure)
+
+        btn_save_setup.clicked.connect(self._save_setup_settings)
+        btn_reload_proj.clicked.connect(self._load_project_settings)
+        btn_gen_structure.clicked.connect(self._generate_project_structure)
+        # Setup helper actions
+        self.btn_add_opentopo.clicked.connect(self.add_opentopo_basemap)
+        self.btn_set_anchor.clicked.connect(self.set_anchor_at_canvas_center)
+        self.btn_set_crs_utm.clicked.connect(self.set_project_crs_from_anchor)
 
         self.tb.addItem(pg_setup, "1. Setup")
 
@@ -123,7 +179,17 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         self.lblWHm = QtWidgets.QLabel("Width × Height (m): –")
         self.lblWHh = QtWidgets.QLabel("Width × Height (hexes): –")
         self.lblCount = QtWidgets.QLabel("Total hexes: –")
-        btn_aoi = QtWidgets.QPushButton("Create AOI")
+
+        # buttons row
+        row_btns = QtWidgets.QHBoxLayout()
+        btn_aoi_from_canvas = QtWidgets.QPushButton("Use Canvas Extent")
+        btn_aoi_from_anchor = QtWidgets.QPushButton("Use Anchor as Center")
+        row_btns.insertWidget(1, btn_aoi_from_anchor) 
+        btn_aoi_from_anchor.clicked.connect(self._fill_from_anchor_point)
+        self.btn_aoi = QtWidgets.QPushButton("Create AOI")
+        row_btns.addWidget(btn_aoi_from_canvas)
+        row_btns.addStretch(1)
+        row_btns.addWidget(self.btn_aoi)
 
         f2.addRow("Units:", row_units)
         f2.addRow("Width:", self.width_input)
@@ -131,7 +197,14 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         f2.addRow(self.lblWHm)
         f2.addRow(self.lblWHh)
         f2.addRow(self.lblCount)
-        f2.addRow(btn_aoi)
+        f2.addRow(row_btns)
+        
+        btn_aoi_from_canvas.clicked.connect(self._fill_from_canvas_extent)
+        self.btn_aoi.clicked.connect(self.create_aoi)
+
+        for w in (self.hex_scale_edit, self.width_input, self.height_input):
+            w.textChanged.connect(self._recalc_aoi_info)
+        self.unit_m.toggled.connect(self._recalc_aoi_info)
 
         self.tb.addItem(pg_aoi, "2. Map Area")
 
@@ -144,27 +217,58 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         f3.addRow("AOI:", row_aoi)
         f3.addRow(btn_build_grid)
         self.tb.addItem(pg_grid, "3. Generate Grid")
+        btn_refresh_aoi.clicked.connect(self._populate_aoi_combo)
+        btn_build_grid.clicked.connect(self.build_hex_grid)
 
-        # --- 4) SET ELEVATION HEIGHTMAP ---
+       # --- 4) SET ELEVATION HEIGHTMAP ---
         pg_elev = QtWidgets.QWidget(); f4 = QtWidgets.QFormLayout(pg_elev)
+
+        # AOI selector for Elevation step (independent from other tabs)
+        self.cboAOI_elev = QtWidgets.QComboBox()
+        btn_refresh_aoi_elev = QtWidgets.QPushButton("Refresh")
+        row_aoi_elev = QtWidgets.QHBoxLayout()
+        row_aoi_elev.addWidget(self.cboAOI_elev)
+        row_aoi_elev.addWidget(btn_refresh_aoi_elev)
+        f4.addRow("AOI for DEM:", row_aoi_elev)
+
+        # DEM source (OpenTopography demtype); default 90 m SRTM (SRTMGL3)
+        self.cbo_dem_source = QtWidgets.QComboBox()
+        self.cbo_dem_source.addItem("SRTM 90m (SRTMGL3) – recommended", "SRTMGL3")
+        self.cbo_dem_source.addItem("SRTM 30m (SRTMGL1)", "SRTMGL1")
+        # (Add more later if you like)
+        f4.addRow("DEM source:", self.cbo_dem_source)
+
+        btn_fetch_srtm = QtWidgets.QPushButton("Download DEM for AOI (OpenTopography)")
+        f4.addRow(btn_fetch_srtm)
+        btn_fetch_srtm.clicked.connect(self.download_dem_from_opentopo)
+
         self.elev_path_edit = QtWidgets.QLineEdit()
         btn_pick_elev = QtWidgets.QPushButton("Browse…")
-        btn_pick_elev.clicked.connect(lambda: self._browse_dir(self.elev_path_edit) if False else None)
-        # ^ if you want file browsing: use QFileDialog.getOpenFileName below in the clicked slot
         def _pick_elev():
-            p, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Choose DEM (tif)", self.out_dir_edit.text() or "", "Rasters (*.tif *.tiff *.img *.vrt);;All files (*.*)")
+            p, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self, "Choose DEM (tif)", self.out_dir_edit.text() or "",
+                "Rasters (*.tif *.tiff *.img *.vrt);;All files (*.*)"
+            )
             if p: self.elev_path_edit.setText(p)
-        btn_pick_elev.clicked.disconnect(); btn_pick_elev.clicked.connect(_pick_elev)
-
+        btn_pick_elev.clicked.connect(_pick_elev)
         row_ep = QtWidgets.QHBoxLayout(); row_ep.addWidget(self.elev_path_edit); row_ep.addWidget(btn_pick_elev)
+
         self.elev_style_combo = QtWidgets.QComboBox()
         btn_refresh_styles = QtWidgets.QPushButton("Refresh styles")
-        btn_apply_elev = QtWidgets.QPushButton("Apply to Project")
+        btn_apply_elev = QtWidgets.QPushButton("Apply Style to DEM")
 
         f4.addRow("DEM file:", row_ep)
         f4.addRow("Style:", self.elev_style_combo)
         f4.addRow(btn_refresh_styles, btn_apply_elev)
         self.tb.addItem(pg_elev, "4. Set Elevation Heightmap")
+
+        # wiring
+        btn_refresh_aoi_elev.clicked.connect(self._populate_aoi_combo)
+        btn_refresh_aoi_elev.clicked.connect(self._sync_aoi_combo_to_elev)
+        btn_refresh_styles.clicked.connect(self._refresh_elevation_styles)
+        self._safe_disconnect(btn_apply_elev.clicked, self._apply_elevation_style_and_add) 
+        self._safe_disconnect(btn_apply_elev.clicked)
+        btn_apply_elev.clicked.connect(self._apply_style_to_existing_dem)
 
         # --- 5) IMPORT OSM (placeholder) ---
         pg_osm = QtWidgets.QWidget(); f5 = QtWidgets.QVBoxLayout(pg_osm)
@@ -233,8 +337,6 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         row_actions.addWidget(self.btn_export_png)
         row_actions.addWidget(self.btn_open_folder)
 
-        f7.addRow(self.lbl_export_px)
-        f7.addRow(self.lbl_export_page)
         f7.addRow(row_actions)
 
         self.tb.addItem(pg_export, "7. Export Map")
@@ -267,13 +369,236 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         # initial state
         self._load_setup_settings()
         proj_name = self.project_name_edit.text().strip()
+        # ---- after UI constructed, before log "ready" ----
+        proj = QgsProject.instance()
+
+        # Load JSON if project is already open/saved
+        self._load_project_settings()
+
+        # Keep JSON in sync with the QGIS project lifecycle
+        try:
+            proj.readProject.connect(self._on_project_read)       # fired after a project is opened
+            proj.projectSaved.connect(self._on_project_saved)     # fired after save/save-as
+            proj.cleared.connect(self._on_project_cleared)        # new project or closed
+        except Exception:
+            # Older QGIS builds may have slightly different signal names; safe to ignore if missing
+            pass
+
         if hasattr(self, "export_name_edit") and not self.export_name_edit.text().strip():
             self.export_name_edit.setText(proj_name or "hexmosaic_export")
+        self._load_project_settings()
         self._populate_aoi_combo()
         self._refresh_elevation_styles()
         self._sync_export_aoi_combo()
         self._rebuild_export_tree()
+        self._recalc_aoi_info() 
+        self._load_config()
         self.log("HexMosaic dock ready.")
+
+        QgsProject.instance().readProject.connect(lambda _: self._load_config())
+        QgsProject.instance().cleared.connect(lambda: self._load_config())
+
+    # ---- per-project settings (JSON alongside the .qgz) ----
+
+    def _project_file_path(self) -> str:
+        """Absolute path to the current QGIS project file, or '' if unsaved."""
+        return QgsProject.instance().fileName() or ""
+
+    def _project_dir(self) -> str:
+        pf = self._project_file_path()
+        return os.path.dirname(pf) if pf else ""
+
+    def _project_settings_path(self) -> str:
+        """hexmosaic.project.json alongside the .qgz (if project saved)."""
+        d = self._project_dir()
+        if not d:
+            return ""
+        return os.path.join(d, "hexmosaic.project.json")
+
+    def _collect_ui_settings(self) -> dict:
+        """Snapshot of UI fields that are project-scoped."""
+        return {
+            "project": {
+                "name": self.project_name_edit.text().strip(),
+                "author": self.author_edit.text().strip(),
+            },
+            "paths": {
+                "out_dir": self.out_dir_edit.text().strip(),
+                "styles_dir": self.styles_dir_edit.text().strip(),
+            },
+            "grid": {
+                "hex_scale_m": self.hex_scale_edit.text().strip(),
+            },
+            "opentopo": {
+                "api_key": self.opentopo_key_edit.text().strip(),
+            }
+        }
+
+    def _apply_ui_settings(self, data: dict):
+        """Apply values from dict to the UI, with safe defaults."""
+        get = lambda *keys, default="": (
+            (lambda d, ks: (d := d) and [d := d.get(k, {}) for k in ks[:-1]] and (d.get(ks[-1], default)))(data, keys)
+        )
+        self.project_name_edit.setText(get("project", "name", default=""))
+        self.author_edit.setText(get("project", "author", default=""))
+        self.out_dir_edit.setText(get("paths", "out_dir", default=""))
+        self.styles_dir_edit.setText(get("paths", "styles_dir", default=""))
+        self.hex_scale_edit.setText(get("grid", "hex_scale_m", default="500"))
+        self.opentopo_key_edit.setText(get("opentopo", "api_key", default=""))
+
+    def _save_project_settings(self):
+        """Write hexmosaic.project.json next to the .qgz (if project has a path)."""
+        p = self._project_settings_path()
+        if not p:
+            # Project not saved yet; nothing to write to disk.
+            return
+        try:
+            with open(p, "w", encoding="utf-8") as f:
+                import json
+                json.dump(self._collect_ui_settings(), f, indent=2)
+            self.log(f"Saved project settings → {os.path.basename(p)}")
+        except Exception as e:
+            self.log(f"Could not save project settings: {e}")
+
+    def _load_project_settings(self):
+        """Read hexmosaic.project.json if present; apply to UI."""
+        p = self._project_settings_path()
+        if not p or not os.path.isfile(p):
+            # If no JSON yet, fall back to global QSettings you already load.
+            return
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                import json
+                data = json.load(f)
+            self._apply_ui_settings(data)
+            self.log(f"Loaded project settings from {os.path.basename(p)}")
+        except Exception as e:
+            self.log(f"Could not read project settings: {e}")
+
+    def _on_project_read(self, *args, **kwargs):
+        # New project loaded from disk
+        self._load_project_settings()
+        # If the per-project out_dir was empty, default to the .qgz folder
+        if not self.out_dir_edit.text().strip():
+            pf = self._project_dir()
+            if pf:
+                self.out_dir_edit.setText(pf)
+
+    def _on_project_saved(self):
+        # Make sure out_dir defaults to the project folder if blank
+        if not self.out_dir_edit.text().strip():
+            pf = self._project_dir()
+            if pf:
+                self.out_dir_edit.setText(pf)
+        self._save_project_settings()
+
+    def _on_project_cleared(self):
+        # Optional: clear project-scoped UI fields for a truly fresh start
+        # (we keep global QSettings fallback intact)
+        pass
+
+    # ---------------------------------------------------------------
+    # Config helpers
+
+    # --- paths ---
+    def _plugin_default_config_path(self) -> str:
+        # points to <plugin>/data/hexmosaic.config.json
+        plug_dir = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(plug_dir, "data", "hexmosaic.config.json")
+
+    def _project_config_path(self) -> str:
+        # <project root>/hexmosaic.config.json
+        return os.path.join(self._project_root(), "hexmosaic.config.json")
+
+    # --- resolution order: explicit -> project -> default ---
+    def _resolve_config_path(self):
+        s = QSettings("HexMosaicOrg", "HexMosaic")
+        explicit = s.value("config/path", "", type=str) or ""
+        if explicit and os.path.isfile(explicit):
+            return explicit, "explicit"
+
+        proj_path = self._project_config_path()
+        if os.path.isfile(proj_path):
+            return proj_path, "project"
+
+        default_path = self._plugin_default_config_path()
+        if os.path.isfile(default_path):
+            return default_path, "default"
+
+        return "", "missing"
+
+    # --- load + validate ---
+    def _load_config(self):
+        path, source = self._resolve_config_path()
+        if not path:
+            self.cfg = {}
+            self.cfg_path = ""
+            self.cfg_path_edit.setText("")
+            self.cfg_source_label.setText("source: –")
+            self.log("Config: no configuration found (missing).")
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception as e:
+            self.cfg = {}
+            self.cfg_path = ""
+            self.cfg_path_edit.setText("")
+            self.cfg_source_label.setText("source: error")
+            self.log(f"Config: failed to read {path}: {e}")
+            return
+
+        if not isinstance(cfg, dict) or "schema_version" not in cfg:
+            self.cfg = {}
+            self.cfg_path = ""
+            self.cfg_path_edit.setText("")
+            self.cfg_source_label.setText("source: invalid")
+            self.log(f"Config: invalid or missing schema_version in {path}")
+            return
+
+        self.cfg = cfg
+        self.cfg_path = path
+        self.cfg_path_edit.setText(path)
+        self.cfg_source_label.setText(f"source: {source}")
+        self.log(f"Config loaded from {source}: {path}")
+
+    # --- actions you can wire to buttons in Setup ---
+    def browse_config_and_save(self):
+        p, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Choose hexmosaic.config.json", self._project_root(),
+            "JSON (*.json);;All files (*.*)"
+        )
+        if not p:
+            return
+        s = QSettings("HexMosaicOrg", "HexMosaic")
+        s.setValue("config/path", p)
+        self._load_config()
+
+    def use_default_config(self):
+        s = QSettings("HexMosaicOrg", "HexMosaic")
+        s.setValue("config/path", "")  # clear explicit
+        self._load_config()
+
+    def copy_template_to_project(self, overwrite=False):
+        src = self._plugin_default_config_path()
+        dst = self._project_config_path()
+        try:
+            if os.path.exists(dst) and not overwrite:
+                self.log(f"Config: file already exists, not overwriting: {dst}")
+                return
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(src, dst)
+            self.log(f"Config: template copied to {dst}")
+            # optionally point QSettings to the new project copy:
+            s = QSettings("HexMosaicOrg", "HexMosaic")
+            s.setValue("config/path", dst)
+            self._load_config()
+        except Exception as e:
+            self.log(f"Config: failed to copy template: {e}")
+
+    # ------------------------------------------------
+
 
     def _sync_export_aoi_combo(self):
         # mirror items from self.cboAOI
@@ -287,6 +612,33 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         self.closingPlugin.emit()
         event.accept()
 
+    def _safe_disconnect(self, signal, slot=None):
+        try:
+            if slot is None:
+                signal.disconnect()
+            else:
+                signal.disconnect(slot)
+        except (TypeError, RuntimeError):
+            # no existing connection (or already cleaned up) — ignore
+            pass
+
+    def _project_root(self) -> str:
+        """Prefer Setup's Project directory; else the folder of the current .qgz; else home."""
+        d = (self.out_dir_edit.text().strip() or _get_setting("paths/out_dir", ""))
+        if d and os.path.isdir(d):
+            return d
+        proj_path = QgsProject.instance().fileName()
+        if proj_path:
+            return os.path.dirname(proj_path)
+        return os.path.expanduser("~")
+
+    def _layers_dir(self) -> str:
+        return os.path.join(self._project_root(), "Layers")
+
+    def _export_dir(self) -> str:
+        # Capital-E per your spec
+        return os.path.join(self._project_root(), "Export")
+
     def _browse_dir(self, line_edit):
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "Select folder", line_edit.text() or os.path.expanduser("~"))
         if d: line_edit.setText(d)
@@ -298,6 +650,9 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         s.setValue("project/name", self.project_name_edit.text())
         s.setValue("project/author", self.author_edit.text())
         s.setValue("grid/hex_scale_m", self.hex_scale_edit.text())
+        s.setValue("opentopo/api_key", self.opentopo_key_edit.text())
+
+        self._save_project_settings()
 
     def _load_setup_settings(self):
         s = QSettings("HexMosaicOrg", "HexMosaic")
@@ -306,6 +661,7 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         self.project_name_edit.setText(s.value("project/name", "", type=str))
         self.author_edit.setText(s.value("project/author", "", type=str))
         self.hex_scale_edit.setText(s.value("grid/hex_scale_m", "500", type=str))
+        self.opentopo_key_edit.setText(s.value("opentopo/api_key", "", type=str))
 
     def _ellipsize(self, s: str, limit: int = 48) -> str:
         s = s.replace("\n", " ").strip()
@@ -322,17 +678,152 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         if hasattr(self, "_log_tab_index"):
             self.tb.setItemText(self._log_tab_index, title)
 
-    def _generate_group_skeleton(self):
+    def _generate_project_structure(self):
+        """
+        Make <Project>/Layers and <Project>/Export.
+        Ensure groups exist and order top->bottom:
+        Mosaic, OSM, Base, Elevation, Reference.
+        Also ensures Base ▸ Base Grid and adds OpenTopoMap once.
+        """
+        # --- folders ---
+        try:
+            os.makedirs(self._layers_dir(), exist_ok=True)
+            os.makedirs(self._export_dir(), exist_ok=True)
+            os.makedirs(os.path.join(self._layers_dir(), "Base", "Base_Grid"), exist_ok=True)
+        except Exception as e:
+            self.log(f"Could not create folders: {e}")
+
         root = QgsProject.instance().layerTreeRoot()
-        order = ["Elevation", "Reference", "OSM", "Base", "Mosaic"]
-        for name in order:
+        desired = ["Mosaic", "OSM", "Base", "Elevation", "Reference"]
+
+        # --- ensure groups ---
+        for name in desired:
             if not root.findGroup(name):
                 root.addGroup(name)
-        # Sub-groups we know we’ll use under Base
-        base = root.findGroup("Base")
-        if base and not any(g.name() == "Base Grid" for g in base.findGroups()):
-            base.addGroup("Base Grid")
-        self.log("Groups prepared: " + " > ".join(order))
+
+        # ensure Base sub-group
+        base_grp = root.findGroup("Base")
+        if base_grp and not any(g.name() == "Base Grid" for g in base_grp.findGroups()):
+            base_grp.addGroup("Base Grid")
+
+        # --- robust reorder via clone-insert-remove (no takeChild) ---
+        def move_group_to_index(parent, name, new_index):
+            node = parent.findGroup(name)
+            if node is None:
+                return
+            children = list(parent.children())
+            try:
+                old_index = children.index(node)
+            except ValueError:
+                return
+            if old_index == new_index:
+                return
+
+            # when moving down, insert after the target to survive later removal
+            insert_index = new_index + 1 if old_index < new_index else new_index
+            parent.insertChildNode(insert_index, node.clone())
+            # remove the original by pointer (safe regardless of index shifts)
+            parent.removeChildNode(node)
+
+        for i, name in enumerate(desired):
+            move_group_to_index(root, name, i)
+
+        # --- add OpenTopoMap once (under Reference) ---
+        try:
+            if not QgsProject.instance().mapLayersByName("OpenTopoMap"):
+                rl = self.add_opentopo_basemap()  # your helper targets "Reference"
+                if rl:
+                    # push to bottom of Reference group (optional)
+                    ref = root.findGroup("Reference")
+                    if ref is not None:
+                        node = ref.findLayer(rl.id())
+                        if node is not None:
+                            # same clone-insert-remove trick to force bottom
+                            ref.insertChildNode(len(ref.children()), node.clone())
+                            ref.removeChildNode(node)
+                try:
+                    v = iface.layerTreeView()
+                    if v:
+                        v.refreshLayerSymbology()
+                except Exception:
+                    pass
+            else:
+                self.log("OpenTopoMap already present; skipping.")
+        except Exception as e:
+            self.log(f"Could not auto-add OpenTopoMap: {e}")
+
+        self.log("Project structure ready: Folders (Layers, Export) + Groups ordered.")
+
+
+    def _ensure_group(self, name):
+        root = QgsProject.instance().layerTreeRoot()
+        grp = root.findGroup(name)
+        return grp or root.addGroup(name)
+
+    def _add_xyz_layer(self, title: str, url_tmpl: str, zmin=0, zmax=17, group_name="Reference"):
+        """
+        Add an XYZ/TMS basemap without external plugins.
+        url_tmpl should use {s} for subdomain, e.g. 'https://a.tile.opentopomap.org/{z}/{x}/{y}.png'
+        """
+        try:
+            # Make sure group exists
+            grp = self._ensure_group(group_name)
+
+            # QGIS wants {s} + 'subdomains=a,b,c' instead of {a}
+            url_tmpl = url_tmpl.replace("{a}", "{s}")
+
+            # Use provider metadata to encode the URI correctly
+            prov_md = QgsProviderRegistry.instance().providerMetadata("wms") # type: ignore
+            encoded = prov_md.encodeUri({
+                "type": "xyz",
+                "url": url_tmpl,
+                "zmin": int(zmin),
+                "zmax": int(zmax),
+                "subdomains": "a,b,c",  # needed for {s}
+                # Optional niceties:
+                # "http-header:User-Agent": "QGIS-HexMosaic"
+            })
+
+            rl = QgsRasterLayer(encoded, title, "wms")
+            if not rl.isValid():
+                self.log(f"Failed to add XYZ layer: {title}")
+                return None
+
+            # Add to project without auto-grouping, then attach to our target group
+            QgsProject.instance().addMapLayer(rl, False)
+            grp.addLayer(rl)
+
+            # Move it to the **bottom** of the group (correct index-based API)
+            node = grp.findLayer(rl.id())
+            if node is not None:
+                children = grp.children()
+                try:
+                    old_idx = children.index(node)
+                    taken = grp.takeChild(old_idx)
+                    if taken is not None:
+                        grp.insertChildNode(len(grp.children()), taken)
+                except ValueError:
+                    pass
+
+            self.log(f"Added basemap: {title} → {group_name}")
+            return rl
+        except Exception as e:
+            self.log(f"Error adding basemap '{title}': {e}")
+            return None
+
+    def add_opentopo_basemap(self):
+        # OpenTopoMap (XYZ), under 'Reference'
+        url = "https://a.tile.opentopomap.org/{z}/{x}/{y}.png"
+        return self._add_xyz_layer("OpenTopoMap", url, zmin=0, zmax=17, group_name="Reference")
+
+    def _styles_elevation_dir(self) -> str:
+        styles_dir = self.styles_dir_edit.text().strip() or _get_setting("paths/styles_dir", "")
+        return os.path.join(styles_dir, "elevation") if styles_dir else ""
+
+    def _layers_elevation_dir(self) -> str:
+        d = os.path.join(self._layers_dir(), "Elevation")
+        os.makedirs(d, exist_ok=True)
+        return d
 
     def _refresh_elevation_styles(self):
         self.elev_style_combo.clear()
@@ -346,42 +837,478 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         for q in sorted(qmls):
             self.elev_style_combo.addItem(q, os.path.join(elev_dir, q))
 
+    def _apply_best_elevation_style(self, raster_layer: QgsRasterLayer):
+        """
+        Apply the best elevation style based on min elevation → base 50.
+        Returns the full QML path applied, or None if nothing applied.
+        """
+        if not raster_layer or not raster_layer.isValid():
+            return None
+
+        prov = raster_layer.dataProvider()
+        stats = prov.bandStatistics(1)
+        min_val = getattr(stats, "minimumValue", None)
+        if min_val is None or math.isinf(min_val) or math.isnan(min_val):
+            from qgis.core import QgsRasterBandStats
+            stats = prov.bandStatistics(1, QgsRasterBandStats.All)
+            min_val = stats.minimumValue
+
+        if min_val is None:
+            self.log("Elevation: could not read minimum elevation; leaving default style.")
+            return None
+
+        base = int(math.floor(float(min_val) / 50.0) * 50)
+
+        elev_dir = self._styles_elevation_dir()
+        if not elev_dir or not os.path.isdir(elev_dir):
+            return None
+
+        def _leading_int(path):
+            fn = os.path.basename(path)
+            num = ""
+            for ch in fn:
+                if ch.isdigit() or (ch == '-' and not num):
+                    num += ch
+                else:
+                    break
+            try:
+                return int(num)
+            except:
+                return None
+
+        candidates = [os.path.join(elev_dir, f) for f in os.listdir(elev_dir) if f.lower().endswith(".qml")]
+        chosen = None
+        for qml in candidates:
+            n = _leading_int(qml)
+            if n is not None and n == base:
+                chosen = qml
+                break
+
+        if not chosen:
+            self.log(f"No matching elevation style for base={base}; leaving default.")
+            return None
+
+        ok, _ = raster_layer.loadNamedStyle(chosen)
+        raster_layer.triggerRepaint()
+        if ok:
+            self.log(f"Applied elevation style: {os.path.basename(chosen)} (min={min_val:.1f} → base={base})")
+            # reflect in the combo
+            self._select_style_in_combo(chosen)
+            return chosen
+        return None
+    
+    def _select_style_in_combo(self, qml_path: str):
+        if not qml_path:
+            return
+        for i in range(self.elev_style_combo.count()):
+            if os.path.normcase(self.elev_style_combo.itemData(i)) == os.path.normcase(qml_path):
+                self.elev_style_combo.setCurrentIndex(i)
+                break
+
+
     def _apply_elevation_style_and_add(self):
         path = self.elev_path_edit.text().strip()
         if not os.path.isfile(path):
             self.log("Elevation: file not found.")
             return
-        lyr = QgsVectorLayer(path, os.path.basename(path), "gdal")  # gdal works for rasters; QGIS auto-detects
-        if not lyr or not lyr.isValid():
-            # Raster needs QgsRasterLayer; let QGIS provider load via 'gdal'
-            from qgis.core import QgsRasterLayer
-            path = self.elev_path_edit.text().strip()
-            if not os.path.isfile(path):
-                self.log("Elevation: file not found.")
-                return
+        rl = QgsRasterLayer(path, os.path.basename(path))
+        if not rl.isValid():
+            self.log("Elevation: failed to load raster.")
+            return
 
-            lyr = QgsRasterLayer(path, os.path.basename(path))
-            if not lyr.isValid():
-                self.log("Elevation: failed to load raster.")
-                return
+        # auto-style first, then fallback to user selection (if any)
+        qml_used = self._apply_best_elevation_style(rl)
+        if not qml_used:
+            qml_path = self.elev_style_combo.currentData()
+            if qml_path and os.path.isfile(qml_path):
+                _ok, _ = rl.loadNamedStyle(qml_path)
+                rl.triggerRepaint()
 
-        # style if chosen
-        qml_path = self.elev_style_combo.currentData()
-        if qml_path and os.path.isfile(qml_path):
-            _ok, _ = lyr.loadNamedStyle(qml_path)
-            lyr.triggerRepaint()
-
-        # add to Elevation group
         proj = QgsProject.instance()
-        root = proj.layerTreeRoot()
-        elev_grp = root.findGroup("Elevation") or root.addGroup("Elevation")
-        proj.addMapLayer(lyr, False); elev_grp.addLayer(lyr)
+        elev_grp = (proj.layerTreeRoot().findGroup("Elevation") or
+                    proj.layerTreeRoot().addGroup("Elevation"))
+        proj.addMapLayer(rl, False); elev_grp.addLayer(rl)
+
+        aoi = self._selected_aoi_layer_for_elev() or self._selected_aoi_layer()
+        if aoi:
+            iface.mapCanvas().setExtent(aoi.extent())
+            iface.mapCanvas().refresh()
+
+        # reflect final selection in combo
+        if qml_used:
+            idx = self.elev_style_combo.findText(os.path.basename(qml_used), Qt.MatchFixedString)
+            if idx >= 0:
+                self.elev_style_combo.setCurrentIndex(idx)
+
         self.log(f"Elevation added: {path}")
+   
+    def _apply_style_to_existing_dem(self):
+        """
+        Apply a style (auto or selected) to the DEM layer referenced in the DEM file field,
+        without adding a duplicate layer. If the layer isn't loaded yet, load it once.
+        """
+        path = (self.elev_path_edit.text() or "").strip()
+        if not path:
+            self.log("DEM style: set a DEM file first.")
+            return
+        path_norm = os.path.normcase(os.path.abspath(path))
+
+        # Try to find an already-loaded raster with this source
+        proj = QgsProject.instance()
+        target = None
+        for lyr in proj.mapLayers().values():
+            if isinstance(lyr, QgsRasterLayer):
+                # compare by source path (normalize for Windows)
+                try:
+                    if os.path.normcase(os.path.abspath(lyr.source())) == path_norm:
+                        target = lyr
+                        break
+                except Exception:
+                    pass
+
+        # If not loaded, load it once and add under Elevation
+        if target is None:
+            target = QgsRasterLayer(path, os.path.basename(path))
+            if not target.isValid():
+                self.log("DEM style: failed to load raster from path.")
+                return
+            elev_grp = (proj.layerTreeRoot().findGroup("Elevation") or
+                        proj.layerTreeRoot().addGroup("Elevation"))
+            proj.addMapLayer(target, False)
+            elev_grp.addLayer(target)
+
+        # Try auto-style first; else use the currently selected style in the combo
+        qml_used = self._apply_best_elevation_style(target)
+        if not qml_used:
+            qml_path = self.elev_style_combo.currentData()
+            if qml_path and os.path.isfile(qml_path):
+                ok, _ = target.loadNamedStyle(qml_path); target.triggerRepaint()
+                if ok:
+                    self._select_style_in_combo(qml_path)
+                    self.log(f"Applied style: {os.path.basename(qml_path)}")
+                else:
+                    self.log("DEM style: failed to apply selected QML.")
+
+    
+    def _aoi_extent_wgs84(self):
+        """
+        Returns (west, east, south, north) of the selected AOI in EPSG:4326.
+        None if no AOI or empty.
+        """
+        aoi = self._selected_aoi_layer()
+        if not aoi:
+            return None
+
+        ext = aoi.extent()
+        if ext.isEmpty():
+            return None
+
+        src = aoi.crs()
+        dst = QgsCoordinateReferenceSystem("EPSG:4326")
+        if not src.isValid():
+            return None
+
+        tr = QgsCoordinateTransform(src, dst, QgsProject.instance().transformContext())
+        ll = tr.transform(ext.xMinimum(), ext.yMinimum())
+        ur = tr.transform(ext.xMaximum(), ext.yMaximum())
+
+        west  = min(ll.x(), ur.x())
+        east  = max(ll.x(), ur.x())
+        south = min(ll.y(), ur.y())
+        north = max(ll.y(), ur.y())
+        return (west, east, south, north)
+    
+    def _bbox_wgs84_with_margin(self, aoi_layer, margin_m: int = 1000):
+        """
+        Return (west, east, south, north) in EPSG:4326 for the AOI extent
+        expanded by `margin_m` meters on all sides (in a projected CRS).
+        We expand in a meter CRS to avoid degree-vs-meter errors.
+        """
+        if not aoi_layer:
+            return None
+
+        ext_src = aoi_layer.extent()
+        if ext_src.isEmpty():
+            return None
+
+        proj = QgsProject.instance()
+        tc = proj.transformContext()
+
+        # Pick a meter CRS to buffer the rectangle:
+        # - If AOI is already meters, use it.
+        # - Else try project CRS if meters.
+        # - Else compute UTM from AOI centroid.
+        src_crs = aoi_layer.crs()
+        meter_crs = None
+        if src_crs.isValid() and src_crs.mapUnits() == QgsUnitTypes.DistanceMeters:
+            meter_crs = src_crs
+        else:
+            proj_crs = iface.mapCanvas().mapSettings().destinationCrs()
+            if proj_crs.isValid() and proj_crs.mapUnits() == QgsUnitTypes.DistanceMeters:
+                meter_crs = proj_crs
+            else:
+                # Build UTM from centroid (in WGS84)
+                wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
+                to_wgs = QgsCoordinateTransform(src_crs, wgs84, tc)
+                cx = (ext_src.xMinimum() + ext_src.xMaximum()) / 2.0
+                cy = (ext_src.yMinimum() + ext_src.yMaximum()) / 2.0
+                c_ll = to_wgs.transform(cx, cy)
+                epsg = self._utm_epsg_for_lonlat(c_ll.x(), c_ll.y())
+                meter_crs = QgsCoordinateReferenceSystem.fromEpsgId(epsg)
+
+        # Transform extent -> meter CRS, expand, then -> WGS84
+        tr_to_m = QgsCoordinateTransform(src_crs, meter_crs, tc)
+        rect_m = tr_to_m.transformBoundingBox(ext_src)
+        rect_m.grow(margin_m)  # expand by margin on all sides
+
+        wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
+        tr_to_wgs = QgsCoordinateTransform(meter_crs, wgs84, tc)
+        rect_ll = tr_to_wgs.transformBoundingBox(rect_m)
+
+        west, east = rect_ll.xMinimum(), rect_ll.xMaximum()
+        south, north = rect_ll.yMinimum(), rect_ll.yMaximum()
+
+        # clamp
+        west  = max(-180.0, min(180.0, west))
+        east  = max(-180.0, min(180.0, east))
+        south = max(-90.0,  min(90.0,  south))
+        north = max(-90.0,  min(90.0,  north))
+        if east <= west or north <= south:
+            return None
+        return (west, east, south, north)
+
+        
+    def download_dem_from_opentopo(self):
+        key = self.opentopo_key_edit.text().strip() or QSettings("HexMosaicOrg", "HexMosaic").value("opentopo/api_key", "", type=str)
+        if not key:
+            self.log("OpenTopography: Please set your API key in Setup.")
+            self.tb.setCurrentIndex(0)
+            return
+
+        # AOI
+        aoi = self._selected_aoi_layer_for_elev() or self._selected_aoi_layer()
+        if not aoi:
+            self.log("OpenTopography: Select an AOI first.")
+            return
+
+        # AOI extent → WGS84, with a small pad (so coverage survives reprojection)
+        pad = 0.01  # ~0.5% bbox pad; tweak if needed
+        ext = aoi.extent()
+        tr = QgsCoordinateTransform(aoi.crs(), QgsCoordinateReferenceSystem("EPSG:4326"),
+                                    QgsProject.instance().transformContext())
+        ll = tr.transform(ext.xMinimum(), ext.yMinimum())
+        ur = tr.transform(ext.xMaximum(), ext.yMaximum())
+        west  = max(-180.0, min(180.0, min(ll.x(), ur.x()) - pad))
+        east  = max(-180.0, min(180.0, max(ll.x(), ur.x()) + pad))
+        south = max(-90.0,  min(90.0,  min(ll.y(), ur.y()) - pad))
+        north = max(-90.0,  min(90.0,  max(ll.y(), ur.y()) + pad))
+        if east <= west or north <= south:
+            self.log("OpenTopography: AOI extent invalid in WGS84.")
+            return
+
+        demtype = self.cbo_dem_source.currentData() or "SRTMGL3"
+
+        params = {
+            "demtype": demtype,
+            "south":   f"{south:.8f}",
+            "north":   f"{north:.8f}",
+            "west":    f"{west:.8f}",
+            "east":    f"{east:.8f}",
+            "outputFormat": "GTiff",
+            "API_Key": key
+        }
+        url = "https://portal.opentopography.org/API/globaldem?" + urllib.parse.urlencode(params)
+
+        aoi_name = self._safe_filename(aoi.name())
+        out_dir = self._layers_elevation_dir()
+        out_src = os.path.join(out_dir, f"{aoi_name}_{demtype}.tif")
+
+        self.log(f"OpenTopography: downloading {demtype}…")
+        try:
+            _fname, _hdrs = urllib.request.urlretrieve(url, out_src)
+        except Exception as e:
+            self.log(f"OpenTopography: download failed: {e}")
+            return
+        if not os.path.exists(out_src) or os.path.getsize(out_src) == 0:
+            self.log("OpenTopography: download produced no file.")
+            return
+
+        # Reproject to project CRS so it overlays perfectly
+        proj_crs = iface.mapCanvas().mapSettings().destinationCrs()
+        out_proj = os.path.join(out_dir, f"{aoi_name}_{demtype}_proj.tif")
+
+        try:
+            from qgis import processing
+            # Build an output bounds in target CRS based on AOI extent (tight crop)
+            to_tr = QgsCoordinateTransform(aoi.crs(), proj_crs, QgsProject.instance().transformContext())
+            a = aoi.extent()
+            llp = to_tr.transform(a.xMinimum(), a.yMinimum())
+            urp = to_tr.transform(a.xMaximum(), a.yMaximum())
+            xmin, xmax = sorted([llp.x(), urp.x()])
+            ymin, ymax = sorted([llp.y(), urp.y()])
+
+            processing.run("gdal:warpreproject", {
+                "INPUT": out_src,
+                "SOURCE_CRS": QgsCoordinateReferenceSystem("EPSG:4326"),
+                "TARGET_CRS": proj_crs,
+                "RESAMPLING": 1,  # Bilinear for DEM
+                "NODATA": None,
+                "TARGET_RESOLUTION": None,  # let GDAL pick; or set e.g. project units per pixel
+                "OPTIONS": "",
+                "DATA_TYPE": 0,  # keep source
+                "TARGET_EXTENT": f"{xmin},{xmax},{ymin},{ymax}",
+                "TARGET_EXTENT_CRS": proj_crs.toWkt(),
+                "MULTITHREADING": True,
+                "EXTRA": "",
+                "OUTPUT": out_proj
+            })
+            use_path = out_proj if os.path.exists(out_proj) else out_src
+        except Exception as e:
+            self.log(f"Reproject (warp) failed; using source CRS raster. Details: {e}")
+            use_path = out_src
+
+        # Add to project (Elevation group), but keep the VIEW at the AOI
+        rl = QgsRasterLayer(use_path, os.path.basename(use_path))
+        if not rl.isValid():
+            self.log("Downloaded DEM but failed to load as raster.")
+            return
+        proj = QgsProject.instance()
+        elev_grp = (proj.layerTreeRoot().findGroup("Elevation") or
+                    proj.layerTreeRoot().addGroup("Elevation"))
+        proj.addMapLayer(rl, False)
+        elev_grp.addLayer(rl)
+
+        # Store path in the field so the style button knows which layer to touch
+        self.elev_path_edit.setText(out_dir)
+
+        # Try auto-style first; if it returns a QML, reflect that in the combo
+        qml_used = self._apply_best_elevation_style(rl)
+        if not qml_used:
+            # fall back to current combobox style if available
+            qml_path = self.elev_style_combo.currentData()
+            if qml_path and os.path.isfile(qml_path):
+                ok, _ = rl.loadNamedStyle(qml_path); rl.triggerRepaint()
+                if ok:
+                    self._select_style_in_combo(qml_path)
+                    self.log(f"Applied fallback style: {os.path.basename(qml_path)}")
+
+        # Keep the map on the AOI (avoids zoom-out surprises)
+        try:
+            iface.mapCanvas().setExtent(aoi.extent())
+            iface.mapCanvas().refresh()
+        except Exception:
+            pass
+
+        self.log(f"OpenTopography: DEM added → {out_dir}")
+
+
+    def _ensure_anchor_layer(self):
+        """
+        Ensure a single-point memory layer in EPSG:4326 called 'Project Anchor' under 'Reference'.
+        Returns the layer.
+        """
+        proj = QgsProject.instance()
+        # Search existing first
+        for lyr in proj.mapLayers().values():
+            if lyr.name() == "Project Anchor" and getattr(lyr, "geometryType", lambda: -1)() == 0:
+                return lyr
+
+        # Create new memory point layer in WGS84
+        from qgis.core import QgsVectorLayer, QgsFields, QgsField, QgsWkbTypes, QgsCoordinateReferenceSystem # type: ignore
+        vl = QgsVectorLayer("Point?crs=EPSG:4326", "Project Anchor", "memory")
+        pr = vl.dataProvider()
+        pr.addAttributes([QgsField("name", QVariant.String)])
+        vl.updateFields()
+
+        QgsProject.instance().addMapLayer(vl, False)
+        ref_grp = self._ensure_group("Base")
+        ref_grp.addLayer(vl)
+        return vl
+
+    def set_anchor_at_canvas_center(self):
+        """
+        Create/move the Project Anchor to the current canvas center (reprojected to EPSG:4326).
+        """
+        anchor = self._ensure_anchor_layer()
+
+        canvas = iface.mapCanvas()
+        center_map = canvas.center()                    # in project CRS
+        proj_crs = canvas.mapSettings().destinationCrs()
+        wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
+        tr = QgsCoordinateTransform(proj_crs, wgs84, QgsProject.instance().transformContext())
+        ll = tr.transform(center_map)                   # lon/lat
+
+        # Update/create the single feature
+        pr = anchor.dataProvider()
+        anchor.startEditing()
+        pr.truncate()  # keep single point
+        f = QgsFeature(anchor.fields())
+        f.setAttributes(["anchor"])
+        f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(ll.x(), ll.y())))
+        pr.addFeature(f)
+        anchor.commitChanges()
+        anchor.triggerRepaint()
+
+        self.log(f"Project Anchor set at lon/lat: {ll.x():.6f}, {ll.y():.6f} (EPSG:4326)")
+
+    def _utm_epsg_for_lonlat(self, lon: float, lat: float) -> int:
+        """
+        Compute the UTM EPSG code for longitude/latitude in degrees.
+        EPSG 326## for northern hemisphere, 327## for southern.
+        """
+        zone = int((lon + 180.0) / 6.0) + 1
+        zone = max(1, min(60, zone))
+        if lat >= 0:
+            return 32600 + zone
+        else:
+            return 32700 + zone
+
+    def set_project_crs_from_anchor(self):
+        """
+        Read the Project Anchor (WGS84), compute UTM zone, set project CRS.
+        """
+        anchor = None
+        for lyr in QgsProject.instance().mapLayers().values():
+            if lyr.name() == "Project Anchor" and getattr(lyr, "geometryType", lambda: -1)() == 0:
+                anchor = lyr
+                break
+
+        if not anchor or anchor.featureCount() == 0:
+            self.log("No Project Anchor found. Use 'Set Anchor at Canvas Center' first.")
+            return
+
+        feat = next(anchor.getFeatures(), None)
+        if not feat or not feat.hasGeometry():
+            self.log("Anchor has no geometry.")
+            return
+
+        # Ensure geometry in lon/lat
+        wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
+        if anchor.crs() != wgs84:
+            # reproject feature’s coordinate to WGS84
+            tr = QgsCoordinateTransform(anchor.crs(), wgs84, QgsProject.instance().transformContext())
+            pt = tr.transform(feat.geometry().asPoint())
+            lon, lat = pt.x(), pt.y()
+        else:
+            pt = feat.geometry().asPoint()
+            lon, lat = pt.x(), pt.y()
+
+        epsg = self._utm_epsg_for_lonlat(lon, lat)
+        new_crs = QgsCoordinateReferenceSystem.fromEpsgId(epsg)
+        if not new_crs.isValid():
+            self.log(f"Computed CRS EPSG:{epsg} is not valid?")
+            return
+
+        QgsProject.instance().setCrs(new_crs)
+        self.log(f"Project CRS set to UTM zone {epsg % 100} ({'N' if lat>=0 else 'S'}), EPSG:{epsg}")
+
+        # Optional: zoom to something sensible
+        iface.mapCanvas().refresh()
 
     def _create_spatial_index(self, vector_path):
         """Build a .qix spatial index for a saved shapefile. Silently ignore failures."""
         try:
-            from qgis import processing
+            from qgis import processing # type: ignore
             if vector_path.lower().endswith(".shp") and os.path.exists(vector_path):
                 processing.run("native:createspatialindex", {"INPUT": vector_path})
                 return True
@@ -409,6 +1336,17 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         if not lyr_id:
             return None
         return QgsProject.instance().mapLayer(lyr_id)
+    
+    def _sync_aoi_combo_to_elev(self):
+        self.cboAOI_elev.blockSignals(True)
+        self.cboAOI_elev.clear()
+        for i in range(self.cboAOI.count()):
+            self.cboAOI_elev.addItem(self.cboAOI.itemText(i), self.cboAOI.itemData(i))
+        self.cboAOI_elev.blockSignals(False)
+
+    def _selected_aoi_layer_for_elev(self):
+        lyr_id = self.cboAOI_elev.currentData()
+        return QgsProject.instance().mapLayer(lyr_id) if lyr_id else None
 
     def _ensure_nested_groups(self, path_list):
         """Create/return a nested group path under the root. Example: ['Base','Base Grid','AOI 1 ...']"""
@@ -471,7 +1409,7 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         Apply fallback styles if QML is missing.
         kind ∈ {'tiles','edges','vertices','centroids'}
         """
-        from qgis.core import QgsFillSymbol, QgsLineSymbol, QgsMarkerSymbol, QgsSingleSymbolRenderer
+        from qgis.core import QgsFillSymbol, QgsLineSymbol, QgsMarkerSymbol, QgsSingleSymbolRenderer # type: ignore
 
         if kind == 'tiles':
             # Polygon: 20% opacity orange fill, no stroke
@@ -762,46 +1700,161 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
 
     # ---------- logic ----------
     def _recalc_aoi_info(self):
-        """Update labels and keep width/height multiples of hex scale when in meters; or convert hexes→meters."""
+        """
+        Update labels, snap to hex multiples, compute counts, color warnings,
+        and enable/disable the Create AOI button.
+        """
+        # hex size (m)
         try:
             hex_m = max(1.0, float(self.hex_scale_edit.text()))
-        except:
+        except Exception:
             hex_m = 500.0
             self.hex_scale_edit.setText("500")
-        # read width/height as floats
-        try: v1 = float(self.width_input.text())
-        except: v1 = 0
-        try: v2 = float(self.height_input.text())
-        except: v2 = 0
 
+        # read width/height numbers from the two edits
+        def _read_f(le):
+            try:
+                return float(le.text())
+            except Exception:
+                return 0.0
+
+        v1 = _read_f(self.width_input)
+        v2 = _read_f(self.height_input)
+
+        # convert / snap depending on units
         if self.unit_m.isChecked():
-            # snap to nearest multiple of hex size
+            # snap meters to nearest multiple of hex size
             if v1 > 0:
                 v1s = max(hex_m, round(v1 / hex_m) * hex_m)
-                if abs(v1s - v1) > 1e-6: self.width_input.blockSignals(True); self.width_input.setText(str(int(v1s))); self.width_input.blockSignals(False); v1 = v1s
+                if abs(v1s - v1) > 1e-9:
+                    self.width_input.blockSignals(True)
+                    self.width_input.setText(str(int(v1s)))
+                    self.width_input.blockSignals(False)
+                v1 = v1s
             if v2 > 0:
                 v2s = max(hex_m, round(v2 / hex_m) * hex_m)
-                if abs(v2s - v2) > 1e-6: self.height_input.blockSignals(True); self.height_input.setText(str(int(v2s))); self.height_input.blockSignals(False); v2 = v2s
+                if abs(v2s - v2) > 1e-9:
+                    self.height_input.blockSignals(True)
+                    self.height_input.setText(str(int(v2s)))
+                    self.height_input.blockSignals(False)
+                v2 = v2s
             w_m, h_m = v1, v2
-            w_h = int(round(w_m / hex_m)); h_h = int(round(h_m / hex_m))
+            w_h = int(round(w_m / hex_m))
+            h_h = int(round(h_m / hex_m))
         else:
-            # values are hex counts; compute meters
-            w_h, h_h = int(max(1, round(v1))), int(max(1, round(v2)))
+            # values are hex counts; round and back-compute meters
+            w_h = max(1, int(round(v1)))
+            h_h = max(1, int(round(v2)))
             if str(w_h) != self.width_input.text():
-                self.width_input.blockSignals(True); self.width_input.setText(str(w_h)); self.width_input.blockSignals(False)
+                self.width_input.blockSignals(True)
+                self.width_input.setText(str(w_h))
+                self.width_input.blockSignals(False)
             if str(h_h) != self.height_input.text():
-                self.height_input.blockSignals(True); self.height_input.setText(str(h_h)); self.height_input.blockSignals(False)
-            w_m, h_m = w_h * hex_m, h_h * hex_m
+                self.height_input.blockSignals(True)
+                self.height_input.setText(str(h_h))
+                self.height_input.blockSignals(False)
+            w_m = w_h * hex_m
+            h_m = h_h * hex_m
 
-        # display
+        # update labels
         self.lblWHm.setText(f"Width x Height (m): {int(w_m)} × {int(h_m)}")
-        self.lblWHh.setText(f"Width x Height (hexes): {int(max(1, round(w_m/hex_m)))} × {int(max(1, round(h_m/hex_m)))}")
-        self.lblCount.setText(f"Total hexes: {int(max(1, round(w_m/hex_m)))*int(max(1, round(h_m/hex_m)))}")
+        self.lblWHh.setText(f"Width x Height (hexes): {w_h} × {h_h}")
+        self.lblCount.setText(f"Total hexes: {w_h * h_h}")
+
+        # validity: if either dimension > 99 hexes, mark red & disable Create
+        too_wide  = w_h > 99
+        too_tall  = h_h > 99
+        invalid   = too_wide or too_tall or (w_m <= 0 or h_m <= 0)
+
+        self._set_warn(self.lblWHh, invalid)
+        self._set_warn(self.lblWHm, invalid)
+        self._set_warn(self.lblCount, invalid)
+        self._set_warn(self.width_input, too_wide)
+        self._set_warn(self.height_input, too_tall)
+
+        # disable/enable Create AOI
+        self.btn_aoi.setEnabled(not invalid)
+
+    def _set_warn(self, widget, warn: bool):
+        """Apply red text when warn is True; else reset."""
+        if warn:
+            widget.setStyleSheet("color: rgb(200,0,0);")
+        else:
+            widget.setStyleSheet("")
+
+    def _fill_from_canvas_extent(self):
+        """Read the current map canvas extent and populate width/height inputs."""
+        canvas = iface.mapCanvas()
+        crs = canvas.mapSettings().destinationCrs()
+        from qgis.core import QgsUnitTypes # type: ignore
+        if crs.mapUnits() != QgsUnitTypes.DistanceMeters:
+            self.log("Note: Canvas CRS is not meters; AOI sizes will not match game meters.")
+
+        ext = canvas.extent()
+        # width/height in layer units; we assume projected CRS in meters (warn elsewhere if not)
+        w_m = max(0.0, ext.width())
+        h_m = max(0.0, ext.height())        
+
+        # hex size (m)
+        try:
+            hex_m = max(1.0, float(self.hex_scale_edit.text()))
+        except Exception:
+            hex_m = 500.0
+            self.hex_scale_edit.setText("500")
+
+        if self.unit_m.isChecked():
+            # snap meters to hex multiple
+            w_s = max(hex_m, round(w_m / hex_m) * hex_m)
+            h_s = max(hex_m, round(h_m / hex_m) * hex_m)
+            self.width_input.setText(str(int(w_s)))
+            self.height_input.setText(str(int(h_s)))
+        else:
+            # fill as hex counts (rounded)
+            w_h = max(1, int(round(w_m / hex_m)))
+            h_h = max(1, int(round(h_m / hex_m)))
+            self.width_input.setText(str(w_h))
+            self.height_input.setText(str(h_h))
+
+        # recompute labels / validity and update button state
+        self._recalc_aoi_info()
+
+    def _fill_from_anchor_point(self):
+        """Use the WGS84 Project Anchor point (reprojected to project CRS) to center the AOI."""
+        # find the anchor layer
+        anchor = None
+        for lyr in QgsProject.instance().mapLayers().values():
+            if lyr.name() == "Project Anchor" and getattr(lyr, "geometryType", lambda: -1)() == 0:
+                anchor = lyr
+                break
+        if not anchor or anchor.featureCount() == 0:
+            self.log("No Project Anchor found. Use 'Set Anchor at Canvas Center' first.")
+            return
+
+        feat = next(anchor.getFeatures(), None)
+        if not feat or not feat.hasGeometry():
+            self.log("Anchor has no geometry.")
+            return
+
+        # transform anchor from its CRS (should be EPSG:4326) to the project CRS
+        proj = QgsProject.instance()
+        proj_crs = iface.mapCanvas().mapSettings().destinationCrs()
+        tr = QgsCoordinateTransform(anchor.crs(), proj_crs, proj.transformContext())
+        pt = tr.transform(feat.geometry().asPoint())  # project CRS point
+
+        # center the canvas there (so user can see); AOI creation uses canvas center
+        c = iface.mapCanvas()
+        ext = c.extent()
+        # keep same width/height; just recenter
+        w = ext.width(); h = ext.height()
+        new_ext = QgsRectangle(pt.x() - w/2, pt.y() - h/2, pt.x() + w/2, pt.y() + h/2)
+        c.setExtent(new_ext)
+        c.refresh()
+
+        self.log("Canvas centered on Project Anchor. Now set sizes and click Create AOI.")
 
     def _open_settings(self):
         dlg = HexMosaicSettingsDialog(self)
         dlg.exec_()
-
 
     def create_aoi(self):
         """Create AOI as a shapefile (no temp layer), load it, style it, group it."""
@@ -846,7 +1899,8 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
             return
 
         shp_name = self._safe_filename(f"AOI_{aoi_idx}_{w_m_i}m_x_{h_m_i}m.shp")
-        shp_path = os.path.join(out_dir, shp_name)
+        shp_path = os.path.join(self._layers_dir(), shp_name)
+        os.makedirs(os.path.dirname(shp_path), exist_ok=True)
 
         # --- hard overwrite any existing sidecars ---
         base, _ = os.path.splitext(shp_path)
@@ -941,7 +1995,7 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
 
     def build_hex_grid(self):
         """Build hex grid from selected AOI; save as individual Shapefiles; load permanently with styling."""
-        from qgis import processing
+        from qgis import processing # type: ignore
 
         # guards to prevent UnboundLocalError on early returns
         saved_tiles = saved_edges = saved_verts = saved_cents = False
@@ -971,7 +2025,7 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
 
         # --- make on-disk folder structure: Base/Base_Grid/<AOI_safe> ---
         aoi_safe = self._safe_filename(aoi.name().replace(" ", "_"))
-        base_dir = os.path.join(out_root, "Base", "Base_Grid", aoi_safe)
+        base_dir = os.path.join(self._layers_dir(), "Base", "Base_Grid", aoi_safe)
         os.makedirs(base_dir, exist_ok=True)
 
         # --- 1) raw grid (TYPE=4 is hex in your build) ---

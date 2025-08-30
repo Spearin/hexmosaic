@@ -22,11 +22,11 @@
  ***************************************************************************/
 """
 import os, json
-from qgis.PyQt.QtCore import Qt, QSettings, QLocale, QTranslator, QCoreApplication
-from qgis.PyQt.QtWidgets import QAction, QDockWidget, QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout
-from qgis.PyQt.QtGui import QIcon
-from qgis.core import QgsProject
-from qgis.utils import iface
+from qgis.PyQt.QtCore import Qt, QSettings, QLocale, QTranslator, QCoreApplication # type: ignore
+from qgis.PyQt.QtWidgets import QAction, QDockWidget, QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout # type: ignore
+from qgis.PyQt.QtGui import QIcon # type: ignore
+from qgis.core import QgsProject # type: ignore
+from qgis.utils import iface # type: ignore
 
 # Initialize Qt resources from file resources.py
 # from .resources import *
