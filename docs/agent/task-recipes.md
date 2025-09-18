@@ -6,6 +6,7 @@ These playbooks outline end-to-end flows the automation agent can follow. Always
 - Confirm you are on a clean branch (`git status`) and sync with `master` before modifying files.
 - Each recipe lists the primary code touchpoints, configs, and expected outputs. If you see unexpected local changes in those files, stop and ask for human guidance.
 - Validation steps are mandatory unless the repository state prevents them (note the reason in the PR description).
+- Run `python scripts/check-qgis.py` before any QGIS-dependent validation; if it exits non-zero, skip those steps and record `QGIS unavailable` in your notes/PR template.
 - When encountering missing context, search the repository (`rg`, `git grep`, or IDE search) and review the linked files before escalating.
 
 ## Recipe Template (for future entries)
@@ -39,7 +40,7 @@ Goal: Deliver the first milestone of the Hex Mosaic Palette initiative by creati
 
 **Validation**
 - Manual: create a small AOI, build the grid, download a DEM, and confirm the button enables/disables appropriately.
-- Automated: add a UI smoke test (e.g., using `QTest`) that verifies the controls appear and validation blocks empty selections.
+- Automated: add a UI smoke test (e.g., using `QTest`) that verifies the controls appear and validation blocks empty selections. When running in a cloud workspace, call `python scripts/check-qgis.py` first and fall back to `pytest -m "not qgis_required"` if the guard passes; otherwise log that QGIS validation was skipped.
 
 **Escalation**
 - If the UI layout overflows the current tab, capture a screenshot and ask for layout direction before rearranging other controls.
@@ -58,7 +59,7 @@ Goal: Deliver the first milestone of the Hex Mosaic Palette initiative by creati
 5. Add unit tests with synthetic raster/hex fixtures to cover mean vs median behaviour, nodata cases, and bucket rounding.
 
 **Validation**
-- Unit tests pass locally (`pytest test/test_elevation_hex.py`).
+- Unit tests pass locally (`pytest test/test_elevation_hex.py`). In cloud environments gate this with `python scripts/check-qgis.py`; when it fails, document the skipped marker instead of attempting to run QGIS-backed tests.
 - Manual spot-check: compare a few sampled hexes against the DEM using the identify tool.
 
 **Escalation**
@@ -79,12 +80,13 @@ Goal: Deliver the first milestone of the Hex Mosaic Palette initiative by creati
 
 **Validation**
 - Manual: run end-to-end with a real DEM and confirm the layer appears with uniform colour per hex.
-- Automated: extend integration tests to ensure the shapefile schema matches expectations and styling metadata attaches without crashing.
+- Automated: extend integration tests, but gate them with `python scripts/check-qgis.py` and the `qgis_required` marker so they only run when a QGIS runtime is present; otherwise record that the check was skipped.
 
 **Escalation**
 - Style cloning fails across QGIS versions - capture layer XML dumps and request design input.
 
 ### Supporting Tasks
+- Add a lightweight guard (`scripts/check-qgis.py`) and mark QGIS-bound tests with `@pytest.mark.qgis_required` so agents can run `pytest -m "not qgis_required"` when QGIS is unavailable.
 - Update `docs/howtos/` with a focused "Generate Hex Elevation Layer" walkthrough once the feature stabilises.
 - Add regression fixtures (small raster + hex grid) under `test/fixtures/elevation_hex/`.
 - Coordinate with design on palette quantisation thresholds before finalising defaults.
@@ -141,7 +143,7 @@ This unlocks AOIs wider/taller than 99 hexes to support segmentation workflows.
 
 **Validation**
 - Manual: create an AOI of 150x150 hexes with the checkbox enabled; ensure the shapefile writes successfully and log shows a caution.
-- Automated: run `pytest test/test_hexmosaic_dockwidget.py` (add/update tests if feasible).
+- Automated: run `pytest test/test_hexmosaic_dockwidget.py` (add/update tests if feasible), but only after `python scripts/check-qgis.py` succeeds; otherwise log that QGIS validations were skipped.
 
 **Escalation**
 - If widening the AOI causes memory errors or layout glitches, pause and consult maintainers.
@@ -168,7 +170,7 @@ Split a large AOI into seamless tiles based on user-specified rows/columns that 
 
 **Validation**
 - Manual: create a 200x200 hex AOI, segment into 2x2 grid, confirm four shapefiles appear and align without gaps/overlap.
-- Automated: add unit tests under `test/` using synthetic AOIs and verifying segment counts and extents.
+- Automated: add unit tests under `test/` using synthetic AOIs and verifying segment counts and extents; skip automatically when `python scripts/check-qgis.py` reports QGIS unavailable.
 
 **Escalation**
 - If geometry splitting fails for concave AOIs, document the limitation and ask for human guidance before proceeding.
@@ -191,7 +193,7 @@ Break an oversized AOI into child maps that prioritize coverage of important POI
 
 **Validation**
 - Manual: use a sample AOI with known city points; verify generated segments include listed POIs and stay within size limits.
-- Automated: create synthetic POI datasets in `test/fixtures` and assert segment counts and membership.
+- Automated: create synthetic POI datasets in `test/fixtures` and assert segment counts and membership, but only run these when `python scripts/check-qgis.py` passes; otherwise capture the skip.
 
 **Escalation**
 - If POI data is unavailable or incomplete, provide a graceful fallback (equal grid) and log guidance; escalate only if both modes fail.
