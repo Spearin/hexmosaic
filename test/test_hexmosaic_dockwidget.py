@@ -17,6 +17,7 @@ import tempfile
 import unittest
 
 from qgis.PyQt.QtGui import QDockWidget
+from qgis.PyQt import sip
 
 from hexmosaic_dockwidget import HexMosaicDockWidget
 
@@ -168,6 +169,21 @@ class HexMosaicDockWidgetTest(unittest.TestCase):
 
             dw.segment_selected_aoi()
             self.assertNotIn(key, dw._segment_preview_layers)
+
+    def test_populate_hex_inputs_handles_deleted_combos(self):
+        dw = self.dockwidget
+
+        sip.delete(dw.cbo_hex_dem_layer)
+        sip.delete(dw.cbo_hex_tiles_layer)
+
+        self.assertTrue(sip.isdeleted(dw.cbo_hex_dem_layer))
+        self.assertTrue(sip.isdeleted(dw.cbo_hex_tiles_layer))
+
+        # Should not raise even though Qt wrappers now reference deleted C++ objects.
+        dw._populate_hex_elevation_inputs()
+
+        self.assertIsNone(dw._selected_hex_dem_layer())
+        self.assertIsNone(dw._selected_hex_tiles_layer())
 
     def test_create_aois_from_poi_layer(self):
         dw = self.dockwidget

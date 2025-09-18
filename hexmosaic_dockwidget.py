@@ -15,6 +15,10 @@ from qgis.utils import iface # pyright: ignore[reportMissingImports]
 from qgis.PyQt import QtCore, QtWidgets # pyright: ignore[reportMissingImports]
 from qgis.PyQt.QtCore import pyqtSignal, QVariant, Qt, QSettings # pyright: ignore[reportMissingImports]
 from qgis.PyQt.QtGui import QImage, QPainter # pyright: ignore[reportMissingImports]
+try:  # pragma: no cover - depends on PyQt availability during tests
+    from qgis.PyQt import sip  # pyright: ignore[reportMissingImports]
+except ImportError:  # pragma: no cover - depends on environment
+    sip = None  # type: ignore[assignment]
 from qgis.core import ( # pyright: ignore[reportMissingImports]
     QgsVectorLayer, QgsRasterLayer, QgsCoordinateReferenceSystem, QgsField, QgsFeature, QgsGeometry, QgsPointXY, QgsProject,
     QgsVectorFileWriter, QgsSnappingConfig, QgsTolerance,
@@ -1721,80 +1725,96 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
                     continue
         return sorted(layers, key=lambda L: L.name().lower())
 
+    def _widget_is_alive(self, widget):
+        if widget is None:
+            return False
+        if sip is not None:
+            try:
+                if sip.isdeleted(widget):
+                    return False
+            except Exception:
+                return False
+        return True
+
     def _populate_hex_elevation_inputs(self):
-        if not hasattr(self, "cbo_hex_dem_layer"):
+        dem_combo = getattr(self, "cbo_hex_dem_layer", None)
+        hex_combo = getattr(self, "cbo_hex_tiles_layer", None)
+
+        if not self._widget_is_alive(dem_combo) or not self._widget_is_alive(hex_combo):
             return
 
         rasters = self._gather_raster_layers()
-        prev_dem_id = self.cbo_hex_dem_layer.currentData() if self.cbo_hex_dem_layer.count() else ""
-        prev_dem_text = self.cbo_hex_dem_layer.currentText() if self.cbo_hex_dem_layer.count() else ""
+        prev_dem_id = dem_combo.currentData() if dem_combo.count() else ""
+        prev_dem_text = dem_combo.currentText() if dem_combo.count() else ""
 
-        self.cbo_hex_dem_layer.blockSignals(True)
-        self.cbo_hex_dem_layer.clear()
+        dem_combo.blockSignals(True)
+        dem_combo.clear()
         for lyr in rasters:
-            self.cbo_hex_dem_layer.addItem(lyr.name(), lyr.id())
+            dem_combo.addItem(lyr.name(), lyr.id())
 
         matched_dem = False
         if prev_dem_id:
-            idx = self.cbo_hex_dem_layer.findData(prev_dem_id)
+            idx = dem_combo.findData(prev_dem_id)
             if idx >= 0:
-                self.cbo_hex_dem_layer.setCurrentIndex(idx)
+                dem_combo.setCurrentIndex(idx)
                 matched_dem = True
         if not matched_dem and self._pending_hex_dem_layer_name:
-            idx = self.cbo_hex_dem_layer.findText(self._pending_hex_dem_layer_name, Qt.MatchFixedString)
+            idx = dem_combo.findText(self._pending_hex_dem_layer_name, Qt.MatchFixedString)
             if idx >= 0:
-                self.cbo_hex_dem_layer.setCurrentIndex(idx)
+                dem_combo.setCurrentIndex(idx)
                 matched_dem = True
         if not matched_dem and prev_dem_text:
-            idx = self.cbo_hex_dem_layer.findText(prev_dem_text, Qt.MatchFixedString)
+            idx = dem_combo.findText(prev_dem_text, Qt.MatchFixedString)
             if idx >= 0:
-                self.cbo_hex_dem_layer.setCurrentIndex(idx)
+                dem_combo.setCurrentIndex(idx)
                 matched_dem = True
         if matched_dem:
             self._pending_hex_dem_layer_name = ""
-        self.cbo_hex_dem_layer.blockSignals(False)
+        dem_combo.blockSignals(False)
 
         hex_layers = self._gather_hex_layers()
-        prev_hex_id = self.cbo_hex_tiles_layer.currentData() if self.cbo_hex_tiles_layer.count() else ""
-        prev_hex_text = self.cbo_hex_tiles_layer.currentText() if self.cbo_hex_tiles_layer.count() else ""
+        prev_hex_id = hex_combo.currentData() if hex_combo.count() else ""
+        prev_hex_text = hex_combo.currentText() if hex_combo.count() else ""
 
-        self.cbo_hex_tiles_layer.blockSignals(True)
-        self.cbo_hex_tiles_layer.clear()
+        hex_combo.blockSignals(True)
+        hex_combo.clear()
         for lyr in hex_layers:
-            self.cbo_hex_tiles_layer.addItem(lyr.name(), lyr.id())
+            hex_combo.addItem(lyr.name(), lyr.id())
 
         matched_hex = False
         if prev_hex_id:
-            idx = self.cbo_hex_tiles_layer.findData(prev_hex_id)
+            idx = hex_combo.findData(prev_hex_id)
             if idx >= 0:
-                self.cbo_hex_tiles_layer.setCurrentIndex(idx)
+                hex_combo.setCurrentIndex(idx)
                 matched_hex = True
         if not matched_hex and self._pending_hex_tile_layer_name:
-            idx = self.cbo_hex_tiles_layer.findText(self._pending_hex_tile_layer_name, Qt.MatchFixedString)
+            idx = hex_combo.findText(self._pending_hex_tile_layer_name, Qt.MatchFixedString)
             if idx >= 0:
-                self.cbo_hex_tiles_layer.setCurrentIndex(idx)
+                hex_combo.setCurrentIndex(idx)
                 matched_hex = True
         if not matched_hex and prev_hex_text:
-            idx = self.cbo_hex_tiles_layer.findText(prev_hex_text, Qt.MatchFixedString)
+            idx = hex_combo.findText(prev_hex_text, Qt.MatchFixedString)
             if idx >= 0:
-                self.cbo_hex_tiles_layer.setCurrentIndex(idx)
+                hex_combo.setCurrentIndex(idx)
                 matched_hex = True
         if matched_hex:
             self._pending_hex_tile_layer_name = ""
-        self.cbo_hex_tiles_layer.blockSignals(False)
+        hex_combo.blockSignals(False)
 
         self._update_hex_elevation_button_state()
 
     def _selected_hex_dem_layer(self):
-        if not hasattr(self, "cbo_hex_dem_layer"):
+        combo = getattr(self, "cbo_hex_dem_layer", None)
+        if not self._widget_is_alive(combo):
             return None
-        lyr_id = self.cbo_hex_dem_layer.currentData()
+        lyr_id = combo.currentData() if combo.count() else None
         return QgsProject.instance().mapLayer(lyr_id) if lyr_id else None
 
     def _selected_hex_tiles_layer(self):
-        if not hasattr(self, "cbo_hex_tiles_layer"):
+        combo = getattr(self, "cbo_hex_tiles_layer", None)
+        if not self._widget_is_alive(combo):
             return None
-        lyr_id = self.cbo_hex_tiles_layer.currentData()
+        lyr_id = combo.currentData() if combo.count() else None
         return QgsProject.instance().mapLayer(lyr_id) if lyr_id else None
 
     def _update_hex_elevation_button_state(self):
