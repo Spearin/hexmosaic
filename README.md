@@ -100,6 +100,16 @@ This plugin helps you build Flashpoint Campaigns map projects in QGIS with a pre
   * Adds it under **Base** and zooms to it.
   * If `aoi.qml` exists in **Styles directory**, it’s applied automatically.
 
+* Pick a **Points of interest** layer to drive AOI centroids, then click **Create AOIs from POIs** to batch-generate AOIs centered on each feature (selected features are honored when present).
+
+* Use **Segment AOI** to split an existing area of interest into an equal grid:
+
+  * Pick the parent AOI from the dropdown, set **Rows × Columns**, and click **Segment AOI**.
+  * Click **Preview Segments** to build a temporary, in-memory layer that visualizes the grid before any shapefiles are written.
+  * Segments are saved to `<Project>/Layers/Base/Base_Grid/<AOI>/Segments/Segment_<row>_<col>.shp` and loaded under **Base ▸ Base Grid ▸ <AOI> ▸ Segments**.
+  * Segment layers inherit AOI styling (or fall back to an outline) and appear in AOI selectors across the plugin.
+  * Click **Delete Segments** to remove generated shapefiles and clear stored metadata if you need to re-run the segmentation.
+
 ---
 
 ## 3) Generate Grid

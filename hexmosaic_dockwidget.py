@@ -74,6 +74,13 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         self.setObjectName("HexMosaicDockWidget")
         self.setWindowTitle("HexMosaic")
 
+        # Track per-AOI segmentation settings for persistence across sessions
+        self._segment_metadata = {}
+        # Track temporary preview layers keyed by AOI metadata key
+        self._segment_preview_layers = {}
+        # Remember desired POI layer by name until the combo is populated
+        self._pending_poi_layer_name = ""
+
         # -- container & layout --
         container = QtWidgets.QWidget(self); self.setWidget(container)
         vbox = QtWidgets.QVBoxLayout(container)
@@ -180,11 +187,24 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         self.lblWHh = QtWidgets.QLabel("Width × Height (hexes): –")
         self.lblCount = QtWidgets.QLabel("Total hexes: –")
 
+        # Points of interest source for AOI centroids
+        self.cbo_poi_layer = QtWidgets.QComboBox()
+        btn_refresh_poi = QtWidgets.QPushButton("Refresh")
+        row_poi_combo = QtWidgets.QHBoxLayout()
+        row_poi_combo.addWidget(self.cbo_poi_layer)
+        row_poi_combo.addWidget(btn_refresh_poi)
+
+        self.btn_create_poi_aois = QtWidgets.QPushButton("Create AOIs from POIs")
+        self.btn_create_poi_aois.setEnabled(False)
+        row_poi_actions = QtWidgets.QHBoxLayout()
+        row_poi_actions.addStretch(1)
+        row_poi_actions.addWidget(self.btn_create_poi_aois)
+
         # buttons row
         row_btns = QtWidgets.QHBoxLayout()
         btn_aoi_from_canvas = QtWidgets.QPushButton("Use Canvas Extent")
         btn_aoi_from_anchor = QtWidgets.QPushButton("Use Anchor as Center")
-        row_btns.insertWidget(1, btn_aoi_from_anchor) 
+        row_btns.insertWidget(1, btn_aoi_from_anchor)
         btn_aoi_from_anchor.clicked.connect(self._fill_from_anchor_point)
         self.btn_aoi = QtWidgets.QPushButton("Create AOI")
         row_btns.addWidget(btn_aoi_from_canvas)
@@ -197,6 +217,45 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         f2.addRow(self.lblWHm)
         f2.addRow(self.lblWHh)
         f2.addRow(self.lblCount)
+        f2.addRow("Points of interest:", row_poi_combo)
+        f2.addRow("", row_poi_actions)
+
+        # AOI segmentation controls
+        self.cboAOI_segment = QtWidgets.QComboBox()
+        btn_refresh_aoi_segment = QtWidgets.QPushButton("Refresh")
+        row_aoi_segment = QtWidgets.QHBoxLayout()
+        row_aoi_segment.addWidget(self.cboAOI_segment)
+        row_aoi_segment.addWidget(btn_refresh_aoi_segment)
+
+        self.seg_rows_spin = QtWidgets.QSpinBox()
+        self.seg_rows_spin.setRange(1, 25)
+        self.seg_rows_spin.setValue(2)
+        self.seg_cols_spin = QtWidgets.QSpinBox()
+        self.seg_cols_spin.setRange(1, 25)
+        self.seg_cols_spin.setValue(2)
+        row_seg_dims = QtWidgets.QHBoxLayout()
+        row_seg_dims.addWidget(QtWidgets.QLabel("Rows:"))
+        row_seg_dims.addWidget(self.seg_rows_spin)
+        row_seg_dims.addSpacing(12)
+        row_seg_dims.addWidget(QtWidgets.QLabel("Columns:"))
+        row_seg_dims.addWidget(self.seg_cols_spin)
+        row_seg_dims.addStretch(1)
+
+        self.btn_preview_segments = QtWidgets.QPushButton("Preview Segments")
+        self.btn_segment_aoi = QtWidgets.QPushButton("Segment AOI")
+        self.btn_clear_segments = QtWidgets.QPushButton("Delete Segments")
+        self.btn_preview_segments.setEnabled(False)
+        self.btn_segment_aoi.setEnabled(False)
+        self.btn_clear_segments.setEnabled(False)
+        row_seg_actions = QtWidgets.QHBoxLayout()
+        row_seg_actions.addWidget(self.btn_preview_segments)
+        row_seg_actions.addWidget(self.btn_segment_aoi)
+        row_seg_actions.addWidget(self.btn_clear_segments)
+        row_seg_actions.addStretch(1)
+
+        f2.addRow("AOI to segment:", row_aoi_segment)
+        f2.addRow("Rows × Columns:", row_seg_dims)
+        f2.addRow("", row_seg_actions)
 
         self.chk_experimental_aoi = QtWidgets.QCheckBox("Allow experimental AOI sizes")
         self.chk_experimental_aoi.setToolTip(
@@ -214,6 +273,14 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         
         btn_aoi_from_canvas.clicked.connect(self._fill_from_canvas_extent)
         self.btn_aoi.clicked.connect(self.create_aoi)
+        btn_refresh_poi.clicked.connect(self._populate_poi_combo)
+        self.cbo_poi_layer.currentIndexChanged.connect(self._update_poi_controls)
+        self.btn_create_poi_aois.clicked.connect(self.create_aois_from_poi)
+        btn_refresh_aoi_segment.clicked.connect(self._populate_aoi_combo)
+        self.btn_preview_segments.clicked.connect(self.preview_segments_for_selected_aoi)
+        self.btn_segment_aoi.clicked.connect(self.segment_selected_aoi)
+        self.btn_clear_segments.clicked.connect(self.clear_segments_for_selected_aoi)
+        self.cboAOI_segment.currentIndexChanged.connect(self._update_segment_buttons_state)
 
         for w in (self.hex_scale_edit, self.width_input, self.height_input):
             w.textChanged.connect(self._recalc_aoi_info)
@@ -401,6 +468,7 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         if hasattr(self, "export_name_edit") and not self.export_name_edit.text().strip():
             self.export_name_edit.setText(proj_name or "hexmosaic_export")
         self._load_project_settings()
+        self._populate_poi_combo()
         self._populate_aoi_combo()
         self._refresh_elevation_styles()
         self._sync_export_aoi_combo()
@@ -445,9 +513,15 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
             },
             "aoi": {
                 "allow_experimental": self.chk_experimental_aoi.isChecked(),
+                "poi_layer_name": self.cbo_poi_layer.currentText().strip() if hasattr(self, "cbo_poi_layer") else "",
             },
             "opentopo": {
                 "api_key": self.opentopo_key_edit.text().strip(),
+            },
+            "segmentation": {
+                "rows": int(self.seg_rows_spin.value()) if hasattr(self, "seg_rows_spin") else 1,
+                "cols": int(self.seg_cols_spin.value()) if hasattr(self, "seg_cols_spin") else 1,
+                "metadata": self._segment_metadata,
             }
         }
 
@@ -463,6 +537,52 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         self.hex_scale_edit.setText(get("grid", "hex_scale_m", default="500"))
         self.opentopo_key_edit.setText(get("opentopo", "api_key", default=""))
         self.chk_experimental_aoi.setChecked(bool(get("aoi", "allow_experimental", default=False)))
+        poi_name = get("aoi", "poi_layer_name", default="")
+        if isinstance(poi_name, str):
+            self._pending_poi_layer_name = poi_name
+
+        seg_data = data.get("segmentation", {}) if isinstance(data, dict) else {}
+        if hasattr(self, "seg_rows_spin"):
+            rows_val = seg_data.get("rows") if isinstance(seg_data, dict) else None
+            try:
+                rows_val = int(rows_val)
+            except (TypeError, ValueError):
+                rows_val = self.seg_rows_spin.value()
+            self.seg_rows_spin.setValue(max(self.seg_rows_spin.minimum(), min(self.seg_rows_spin.maximum(), rows_val)))
+        if hasattr(self, "seg_cols_spin"):
+            cols_val = seg_data.get("cols") if isinstance(seg_data, dict) else None
+            try:
+                cols_val = int(cols_val)
+            except (TypeError, ValueError):
+                cols_val = self.seg_cols_spin.value()
+            self.seg_cols_spin.setValue(max(self.seg_cols_spin.minimum(), min(self.seg_cols_spin.maximum(), cols_val)))
+
+        metadata = {}
+        if isinstance(seg_data, dict):
+            raw_meta = seg_data.get("metadata", {})
+            if isinstance(raw_meta, dict):
+                for key, entry in raw_meta.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    row_val = entry.get("rows")
+                    col_val = entry.get("cols")
+                    try:
+                        row_int = int(row_val) if row_val is not None else None
+                    except (TypeError, ValueError):
+                        row_int = None
+                    try:
+                        col_int = int(col_val) if col_val is not None else None
+                    except (TypeError, ValueError):
+                        col_int = None
+                    meta_entry = {
+                        "parent": entry.get("parent"),
+                        "rows": row_int,
+                        "cols": col_int,
+                        "segments": [str(s) for s in entry.get("segments", []) if s is not None],
+                    }
+                    metadata[str(key)] = meta_entry
+        self._segment_metadata = metadata
+        self._update_segment_buttons_state()
 
     def _save_project_settings(self):
         """Write hexmosaic.project.json next to the .qgz (if project has a path)."""
@@ -513,7 +633,10 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
     def _on_project_cleared(self):
         # Optional: clear project-scoped UI fields for a truly fresh start
         # (we keep global QSettings fallback intact)
-        pass
+        self._segment_metadata = {}
+        self._remove_all_segment_previews()
+        self._populate_aoi_combo()
+        self._populate_poi_combo()
 
     # ---------------------------------------------------------------
     # Config helpers
@@ -1334,19 +1457,459 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
             pass
         return False
 
-    def _populate_aoi_combo(self):
-        """List polygon layers whose name starts with 'AOI '."""
-        self.cboAOI.clear()
+    def _gather_aoi_layers(self):
         proj = QgsProject.instance()
         candidates = []
         for lyr in proj.mapLayers().values():
-            # 2 = polygon; accept both memory and disk-backed; name convention 'AOI ...'
             if hasattr(lyr, "geometryType") and lyr.geometryType() == 2 and lyr.name().upper().startswith("AOI"):
                 candidates.append(lyr)
+        return sorted(candidates, key=lambda L: L.name().lower())
 
-        # sort by name for stability
-        for lyr in sorted(candidates, key=lambda L: L.name().lower()):
-            self.cboAOI.addItem(lyr.name(), lyr.id())
+    def _gather_poi_layers(self):
+        proj = QgsProject.instance()
+        candidates = []
+        for lyr in proj.mapLayers().values():
+            if not hasattr(lyr, "geometryType"):
+                continue
+            try:
+                geom_type = lyr.geometryType()
+            except Exception:
+                continue
+            if geom_type == QgsWkbTypes.PointGeometry or geom_type == 0:
+                candidates.append(lyr)
+        return sorted(candidates, key=lambda L: L.name().lower())
+
+    def _populate_aoi_combo(self):
+        """Refresh AOI-aware combos, including segmentation controls."""
+        layers = self._gather_aoi_layers()
+        if hasattr(self, "cboAOI"):
+            prev = self.cboAOI.currentData() if self.cboAOI.count() else None
+            self.cboAOI.blockSignals(True)
+            self.cboAOI.clear()
+            for lyr in layers:
+                self.cboAOI.addItem(lyr.name(), lyr.id())
+            if prev is not None:
+                idx = self.cboAOI.findData(prev)
+                if idx >= 0:
+                    self.cboAOI.setCurrentIndex(idx)
+            self.cboAOI.blockSignals(False)
+
+        if hasattr(self, "cboAOI_segment"):
+            parent_layers = [lyr for lyr in layers if "segment" not in lyr.name().lower()]
+            prev_seg = self.cboAOI_segment.currentData() if self.cboAOI_segment.count() else None
+            self.cboAOI_segment.blockSignals(True)
+            self.cboAOI_segment.clear()
+            for lyr in parent_layers:
+                self.cboAOI_segment.addItem(lyr.name(), lyr.id())
+            if prev_seg is not None:
+                idx = self.cboAOI_segment.findData(prev_seg)
+                if idx >= 0:
+                    self.cboAOI_segment.setCurrentIndex(idx)
+            self.cboAOI_segment.blockSignals(False)
+
+        self._sync_aoi_combo_to_elev()
+        self._sync_export_aoi_combo()
+        self._update_segment_buttons_state()
+
+    def _populate_poi_combo(self):
+        if not hasattr(self, "cbo_poi_layer"):
+            return
+
+        layers = self._gather_poi_layers()
+        prev_id = self.cbo_poi_layer.currentData() if self.cbo_poi_layer.count() else None
+        prev_name = self.cbo_poi_layer.currentText() if self.cbo_poi_layer.count() else ""
+
+        self.cbo_poi_layer.blockSignals(True)
+        self.cbo_poi_layer.clear()
+        for lyr in layers:
+            self.cbo_poi_layer.addItem(lyr.name(), lyr.id())
+
+        target_name = (self._pending_poi_layer_name or prev_name).strip()
+        applied = False
+        if target_name:
+            idx = self.cbo_poi_layer.findText(target_name, Qt.MatchExactly)
+            if idx >= 0:
+                self.cbo_poi_layer.setCurrentIndex(idx)
+                applied = True
+        if not applied and prev_id is not None:
+            idx = self.cbo_poi_layer.findData(prev_id)
+            if idx >= 0:
+                self.cbo_poi_layer.setCurrentIndex(idx)
+
+        self.cbo_poi_layer.blockSignals(False)
+        self._pending_poi_layer_name = ""
+        self._update_poi_controls()
+
+    def _selected_poi_layer(self):
+        if not hasattr(self, "cbo_poi_layer"):
+            return None
+        lyr_id = self.cbo_poi_layer.currentData()
+        return QgsProject.instance().mapLayer(lyr_id) if lyr_id else None
+
+    def _update_poi_controls(self):
+        if not hasattr(self, "btn_create_poi_aois"):
+            return
+        layer = self._selected_poi_layer()
+        self.btn_create_poi_aois.setEnabled(layer is not None)
+        if layer is not None:
+            self._pending_poi_layer_name = layer.name()
+
+    def _selected_aoi_layer_for_segmentation(self):
+        if not hasattr(self, "cboAOI_segment"):
+            return None
+        lyr_id = self.cboAOI_segment.currentData()
+        return QgsProject.instance().mapLayer(lyr_id) if lyr_id else None
+
+    def _segment_directory_for_layer(self, layer):
+        parent_safe = self._safe_filename(layer.name().replace(" ", "_"))
+        return os.path.join(self._layers_dir(), "Base", "Base_Grid", parent_safe, "Segments")
+
+    def _metadata_key_for_layer(self, layer):
+        return self._safe_filename(layer.name().replace(" ", "_")).lower()
+
+    def _has_segments_for_layer(self, layer):
+        key = self._metadata_key_for_layer(layer)
+        meta = self._segment_metadata.get(key, {})
+        if meta.get("segments"):
+            return True
+        seg_dir = self._segment_directory_for_layer(layer)
+        if os.path.isdir(seg_dir):
+            for name in os.listdir(seg_dir):
+                if name.lower().endswith(".shp"):
+                    return True
+        return False
+
+    def _update_segment_buttons_state(self):
+        parent = self._selected_aoi_layer_for_segmentation()
+        has_parent = parent is not None
+        if hasattr(self, "btn_preview_segments"):
+            self.btn_preview_segments.setEnabled(bool(has_parent))
+        if hasattr(self, "btn_segment_aoi"):
+            self.btn_segment_aoi.setEnabled(bool(has_parent))
+        if hasattr(self, "btn_clear_segments"):
+            self.btn_clear_segments.setEnabled(bool(has_parent and parent and self._has_segments_for_layer(parent)))
+
+    def _clean_vector_sidecars(self, path_with_ext):
+        base, _ = os.path.splitext(path_with_ext)
+        for ext in (".shp", ".shx", ".dbf", ".prj", ".cpg", ".qix", ".qmd"):
+            p = base + ext
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
+    def _remove_segment_preview(self, parent_layer):
+        key = self._metadata_key_for_layer(parent_layer)
+        lyr_id = self._segment_preview_layers.pop(key, None)
+        if lyr_id:
+            lyr = QgsProject.instance().mapLayer(lyr_id)
+            if lyr:
+                QgsProject.instance().removeMapLayer(lyr.id())
+
+    def _remove_all_segment_previews(self):
+        proj = QgsProject.instance()
+        for lyr_id in list(self._segment_preview_layers.values()):
+            lyr = proj.mapLayer(lyr_id)
+            if lyr:
+                proj.removeMapLayer(lyr.id())
+        self._segment_preview_layers.clear()
+
+    def _remove_segment_layers(self, parent_layer):
+        seg_dir = self._segment_directory_for_layer(parent_layer)
+        seg_dir_abs = os.path.abspath(seg_dir)
+        proj = QgsProject.instance()
+        to_remove = []
+        for lyr in proj.mapLayers().values():
+            source = getattr(lyr, "source", lambda: "")()
+            source_path = source.split("|")[0] if source else ""
+            if source_path:
+                try:
+                    common = os.path.commonpath([os.path.abspath(source_path), seg_dir_abs])
+                except ValueError:
+                    common = ""
+                if common == seg_dir_abs:
+                    to_remove.append(lyr.id())
+        if to_remove:
+            proj.removeMapLayers(to_remove)
+
+    def _ensure_segments_group(self, parent_layer):
+        group_path = ["Base", "Base Grid", parent_layer.name(), "Segments"]
+        return self._ensure_nested_groups(group_path)
+
+    def preview_segments_for_selected_aoi(self):
+        parent_layer = self._selected_aoi_layer_for_segmentation()
+        if not parent_layer:
+            self.log("Select an AOI to preview segments.")
+            return
+
+        rows = max(1, int(self.seg_rows_spin.value())) if hasattr(self, "seg_rows_spin") else 1
+        cols = max(1, int(self.seg_cols_spin.value())) if hasattr(self, "seg_cols_spin") else 1
+
+        try:
+            hex_m = max(1.0, float(self.hex_scale_edit.text()))
+        except Exception:
+            hex_m = 500.0
+            self.hex_scale_edit.setText("500")
+
+        result, err = self._prepare_segment_cells(parent_layer, rows, cols, hex_m)
+        if err:
+            self.log(err)
+            return
+
+        cells = result.get("cells", []) if result else []
+        if not cells:
+            self.log("No segments were computed for preview.")
+            return
+
+        self._remove_segment_preview(parent_layer)
+
+        crs = parent_layer.crs()
+        mem_layer = QgsVectorLayer(f"MultiPolygon?crs={crs.authid()}", f"{parent_layer.name()} – Segment Preview", "memory")
+        provider = mem_layer.dataProvider()
+        provider.addAttributes([
+            QgsField("id", QVariant.Int),
+            QgsField("row", QVariant.Int),
+            QgsField("col", QVariant.Int),
+        ])
+        mem_layer.updateFields()
+
+        features = []
+        for cell in cells:
+            feat = QgsFeature(mem_layer.fields())
+            feat.setAttribute("id", cell["id"])
+            feat.setAttribute("row", cell["row"])
+            feat.setAttribute("col", cell["col"])
+            feat.setGeometry(cell["geometry"])
+            features.append(feat)
+
+        if features:
+            provider.addFeatures(features)
+            mem_layer.updateExtents()
+
+        sym = QgsFillSymbol.createSimple({
+            'color': '255,255,255,0',
+            'outline_color': '0,0,0,200',
+            'outline_width': '0.6',
+            'outline_style': 'dash'
+        })
+        mem_layer.setRenderer(QgsSingleSymbolRenderer(sym))
+
+        proj = QgsProject.instance()
+        group = self._ensure_segments_group(parent_layer)
+        proj.addMapLayer(mem_layer, False)
+        group.insertLayer(0, mem_layer)
+
+        key = self._metadata_key_for_layer(parent_layer)
+        self._segment_preview_layers[key] = mem_layer.id()
+        self.log(f"Previewed {len(features)} segments for {parent_layer.name()}.")
+
+    def _prepare_segment_cells(self, parent_layer, rows, cols, hex_m):
+        geoms = [feat.geometry() for feat in parent_layer.getFeatures()]
+        if not geoms:
+            return None, "Selected AOI has no geometry to segment."
+
+        aoi_geom = QgsGeometry.unaryUnion(geoms)
+        if aoi_geom.isEmpty():
+            return None, "AOI geometry is empty; segmentation skipped."
+
+        extent = aoi_geom.boundingBox()
+        xmin, xmax = extent.xMinimum(), extent.xMaximum()
+        ymin, ymax = extent.yMinimum(), extent.yMaximum()
+
+        grid_min_x = math.floor(xmin / hex_m) * hex_m
+        grid_max_x = math.ceil(xmax / hex_m) * hex_m
+        grid_min_y = math.floor(ymin / hex_m) * hex_m
+        grid_max_y = math.ceil(ymax / hex_m) * hex_m
+
+        width_cells = max(cols, int(math.ceil((grid_max_x - grid_min_x) / hex_m)))
+        if width_cells % cols != 0:
+            width_cells = int(math.ceil(width_cells / cols) * cols)
+            grid_max_x = grid_min_x + width_cells * hex_m
+
+        height_cells = max(rows, int(math.ceil((grid_max_y - grid_min_y) / hex_m)))
+        if height_cells % rows != 0:
+            height_cells = int(math.ceil(height_cells / rows) * rows)
+            grid_max_y = grid_min_y + height_cells * hex_m
+
+        step_x = (grid_max_x - grid_min_x) / cols if cols else 0
+        step_y = (grid_max_y - grid_min_y) / rows if rows else 0
+
+        x_edges = [grid_min_x + i * step_x for i in range(cols + 1)] if cols else []
+        y_edges = [grid_min_y + j * step_y for j in range(rows + 1)] if rows else []
+
+        cells = []
+        feature_id = 1
+        for row_index in range(rows):
+            row_num = row_index + 1
+            ymin_seg = y_edges[rows - (row_index + 1)]
+            ymax_seg = y_edges[rows - row_index]
+            for col_index in range(cols):
+                col_num = col_index + 1
+                xmin_seg = x_edges[col_index]
+                xmax_seg = x_edges[col_index + 1]
+
+                rect_geom = QgsGeometry.fromPolygonXY([[
+                    QgsPointXY(xmin_seg, ymin_seg),
+                    QgsPointXY(xmin_seg, ymax_seg),
+                    QgsPointXY(xmax_seg, ymax_seg),
+                    QgsPointXY(xmax_seg, ymin_seg)
+                ]])
+
+                seg_geom = aoi_geom.intersection(rect_geom)
+                if seg_geom.isEmpty():
+                    continue
+
+                seg_geom = seg_geom.makeValid()
+                if seg_geom.isEmpty():
+                    continue
+                seg_geom.convertToMultiType()
+
+                cells.append({
+                    "id": feature_id,
+                    "row": row_num,
+                    "col": col_num,
+                    "geometry": seg_geom,
+                })
+                feature_id += 1
+
+        info = {
+            "cells": cells,
+            "aoi_geom": aoi_geom,
+            "grid_min_x": grid_min_x,
+            "grid_max_x": grid_max_x,
+            "grid_min_y": grid_min_y,
+            "grid_max_y": grid_max_y,
+            "step_x": step_x,
+            "step_y": step_y,
+        }
+        return info, None
+
+    def segment_selected_aoi(self):
+        parent_layer = self._selected_aoi_layer_for_segmentation()
+        if not parent_layer:
+            self.log("Select an AOI to segment.")
+            return
+
+        rows = max(1, int(self.seg_rows_spin.value())) if hasattr(self, "seg_rows_spin") else 1
+        cols = max(1, int(self.seg_cols_spin.value())) if hasattr(self, "seg_cols_spin") else 1
+
+        try:
+            hex_m = max(1.0, float(self.hex_scale_edit.text()))
+        except Exception:
+            hex_m = 500.0
+            self.hex_scale_edit.setText("500")
+
+        seg_dir = self._segment_directory_for_layer(parent_layer)
+        os.makedirs(seg_dir, exist_ok=True)
+
+        result, err = self._prepare_segment_cells(parent_layer, rows, cols, hex_m)
+        if err:
+            self.log(err)
+            return
+        cells = result.get("cells", []) if result else []
+
+        self._remove_segment_preview(parent_layer)
+        self._remove_segment_layers(parent_layer)
+        shutil.rmtree(seg_dir, ignore_errors=True)
+        os.makedirs(seg_dir, exist_ok=True)
+
+        fields = QgsFields()
+        fields.append(QgsField("id", QVariant.Int))
+        fields.append(QgsField("row", QVariant.Int))
+        fields.append(QgsField("col", QVariant.Int))
+        fields.append(QgsField("name", QVariant.String, len=80))
+
+        proj = QgsProject.instance()
+        group = self._ensure_segments_group(parent_layer)
+        created_layers = []
+        segment_names = []
+        for cell in cells:
+            seg_geom = cell["geometry"]
+            row_num = cell["row"]
+            col_num = cell["col"]
+            seg_name = f"{parent_layer.name()} – Segment R{row_num}C{col_num}"
+            shp_name = self._safe_filename(f"Segment_{row_num}_{col_num}.shp")
+            shp_path = os.path.join(seg_dir, shp_name)
+            self._clean_vector_sidecars(shp_path)
+
+            writer = QgsVectorFileWriter(
+                shp_path, "UTF-8", fields, QgsWkbTypes.MultiPolygon, parent_layer.crs(), "ESRI Shapefile"
+            )
+            if writer.hasError() != QgsVectorFileWriter.NoError:
+                del writer
+                self.log(f"Failed to write segment shapefile: {shp_path}")
+                continue
+
+            feat = QgsFeature(fields)
+            feat.setAttribute("id", cell["id"])
+            feat.setAttribute("row", row_num)
+            feat.setAttribute("col", col_num)
+            feat.setAttribute("name", seg_name)
+            feat.setGeometry(seg_geom)
+            writer.addFeature(feat)
+            del writer
+
+            seg_layer = QgsVectorLayer(shp_path, seg_name, "ogr")
+            if not seg_layer.isValid():
+                self.log(f"Segment shapefile saved but failed to load: {shp_path}")
+                continue
+
+            styled = self._apply_style(seg_layer, "aoi_segment.qml") or self._apply_style(seg_layer, "aoi.qml")
+            if not styled:
+                sym = QgsFillSymbol.createSimple({
+                        'color': '255,255,255,0',
+                        'outline_color': '0,150,136',
+                        'outline_width': '0.6'
+                    })
+                    seg_layer.setRenderer(QgsSingleSymbolRenderer(sym))
+
+                proj.addMapLayer(seg_layer, False)
+                group.addLayer(seg_layer)
+                created_layers.append(seg_layer)
+                segment_names.append(seg_layer.name())
+
+        if not created_layers:
+            self.log("No segments were created; the AOI may be too small for the requested grid.")
+            shutil.rmtree(seg_dir, ignore_errors=True)
+            self._update_segment_buttons_state()
+            return
+
+        key = self._metadata_key_for_layer(parent_layer)
+        self._segment_metadata[key] = {
+            "parent": parent_layer.name(),
+            "rows": rows,
+            "cols": cols,
+            "segments": segment_names,
+        }
+
+        self._save_project_settings()
+        self._populate_aoi_combo()
+        self.log(f"Created {len(created_layers)} segments for {parent_layer.name()} in {rows}×{cols} grid.")
+
+    def clear_segments_for_selected_aoi(self):
+        parent_layer = self._selected_aoi_layer_for_segmentation()
+        if not parent_layer:
+            self.log("Select an AOI to clear segments.")
+            return
+
+        seg_dir = self._segment_directory_for_layer(parent_layer)
+        self._remove_segment_preview(parent_layer)
+        self._remove_segment_layers(parent_layer)
+        shutil.rmtree(seg_dir, ignore_errors=True)
+
+        key = self._metadata_key_for_layer(parent_layer)
+        removed = False
+        if key in self._segment_metadata:
+            removed = bool(self._segment_metadata[key].get("segments"))
+            self._segment_metadata.pop(key, None)
+
+        self._save_project_settings()
+        self._populate_aoi_combo()
+        if removed:
+            self.log(f"Removed stored segments for {parent_layer.name()}.")
+        else:
+            self.log(f"No stored segments found for {parent_layer.name()}.")
 
     def _selected_aoi_layer(self):
         """Return the AOI layer object chosen in the combo, or None."""
@@ -1823,6 +2386,134 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         else:
             widget.setStyleSheet("")
 
+    def _current_aoi_dimensions(self):
+        try:
+            hex_m = max(1.0, float(self.hex_scale_edit.text()))
+        except Exception:
+            hex_m = 500.0
+            self.hex_scale_edit.setText("500")
+
+        use_meters = self.unit_m.isChecked()
+        try:
+            width_val = float(self.width_input.text())
+            height_val = float(self.height_input.text())
+        except Exception:
+            self.log("Invalid size.")
+            return None
+
+        if use_meters:
+            w_m, h_m = width_val, height_val
+        else:
+            w_m = int(round(width_val)) * hex_m
+            h_m = int(round(height_val)) * hex_m
+
+        if w_m <= 0 or h_m <= 0:
+            self.log("Width/Height must be > 0.")
+            return None
+
+        w_h = int(round(w_m / hex_m)) if hex_m else 0
+        h_h = int(round(h_m / hex_m)) if hex_m else 0
+        oversize = w_h > 99 or h_h > 99
+        allow_experimental = bool(self.chk_experimental_aoi.isChecked())
+        if oversize and not allow_experimental:
+            self.log("AOIs larger than 99 hexes are blocked. Enable experimental AOI sizes to proceed.")
+            return None
+
+        return {
+            "hex_m": hex_m,
+            "width_m": w_m,
+            "height_m": h_m,
+            "width_hex": w_h,
+            "height_hex": h_h,
+            "oversize": oversize,
+        }
+
+    def _create_aoi_from_center(self, center_point, dims, index, label_suffix=None, file_hint=None):
+        if not dims:
+            return None
+
+        w_m = dims["width_m"]
+        h_m = dims["height_m"]
+
+        canvas = iface.mapCanvas()
+        crs = canvas.mapSettings().destinationCrs()
+
+        xmin, xmax = center_point.x() - w_m / 2.0, center_point.x() + w_m / 2.0
+        ymin, ymax = center_point.y() - h_m / 2.0, center_point.y() + h_m / 2.0
+
+        w_m_i, h_m_i = int(round(w_m)), int(round(h_m))
+        display_name = f"AOI {index} {w_m_i}m x {h_m_i}m"
+        if label_suffix:
+            display_name += f" – {label_suffix}"
+
+        out_dir = _get_setting("paths/out_dir", "")
+        if not out_dir or not os.path.isdir(out_dir):
+            self.log("No output directory set (Settings).")
+            return None
+
+        file_suffix = f"_{file_hint}" if file_hint else ""
+        shp_name = self._safe_filename(f"AOI_{index}_{w_m_i}m_x_{h_m_i}m{file_suffix}.shp")
+        shp_path = os.path.join(self._layers_dir(), shp_name)
+        os.makedirs(os.path.dirname(shp_path), exist_ok=True)
+
+        self._clean_vector_sidecars(shp_path)
+
+        fields = QgsFields()
+        fields.append(QgsField("id", QVariant.Int))
+
+        writer = QgsVectorFileWriter(
+            shp_path, "UTF-8", fields, QgsWkbTypes.Polygon, crs, "ESRI Shapefile"
+        )
+
+        if writer.hasError() != QgsVectorFileWriter.NoError:
+            self.log(f"Failed to create shapefile: {shp_path}")
+            del writer
+            return None
+
+        feat = QgsFeature(fields)
+        feat.setAttribute("id", 1)
+        feat.setGeometry(QgsGeometry.fromPolygonXY([[
+            QgsPointXY(xmin, ymin),
+            QgsPointXY(xmin, ymax),
+            QgsPointXY(xmax, ymax),
+            QgsPointXY(xmax, ymin)
+        ]]))
+        writer.addFeature(feat)
+        del writer
+
+        aoi_layer = QgsVectorLayer(shp_path, display_name, "ogr")
+        if not aoi_layer.isValid():
+            self.log("Saved AOI shapefile, but failed to load it.")
+            return None
+
+        qml_ok = self._apply_style(aoi_layer, "aoi.qml")
+        if not qml_ok:
+            sym = QgsFillSymbol.createSimple({
+                'color': '255,255,255,0',
+                'outline_color': '255,105,180',
+                'outline_width': '0.6'
+            })
+            aoi_layer.setRenderer(QgsSingleSymbolRenderer(sym))
+
+        proj = QgsProject.instance()
+        root = proj.layerTreeRoot()
+        base_grp = root.findGroup('Base') or root.addGroup('Base')
+
+        to_remove = [lyr.id() for lyr in proj.mapLayers().values()
+                    if lyr.providerType() == "memory" and lyr.name().startswith("AOI")]
+        if to_remove:
+            proj.removeMapLayers(to_remove)
+
+        proj.addMapLayer(aoi_layer, False)
+        base_grp.addLayer(aoi_layer)
+
+        canvas.setExtent(aoi_layer.extent())
+        canvas.refresh()
+
+        style_msg = "Style: QML applied." if qml_ok else "Style: QML missing (used fallback)."
+        self.log(f"{display_name} added to 'Base'. Saved to Shapefile. {style_msg}")
+        return aoi_layer
+
     def _fill_from_canvas_extent(self):
         """Read the current map canvas extent and populate width/height inputs."""
         canvas = iface.mapCanvas()
@@ -1898,124 +2589,109 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         dlg.exec_()
 
     def create_aoi(self):
-        """Create AOI as a shapefile (no temp layer), load it, style it, group it."""
-        # --- sizes ---
-        try:
-            hex_m = max(1.0, float(self.hex_scale_edit.text()))
-        except:
-            hex_m = 500.0
-            self.hex_scale_edit.setText("500")
-
-        use_meters = self.unit_m.isChecked()
-        try:
-            a = float(self.width_input.text()); b = float(self.height_input.text())
-        except:
-            self.log("Invalid size.")
+        """Create AOI at the map canvas center using the configured dimensions."""
+        dims = self._current_aoi_dimensions()
+        if not dims:
             return
 
-        if use_meters:
-            w_m, h_m = a, b
-        else:
-            w_m, h_m = int(a) * hex_m, int(b) * hex_m
-
-        if w_m <= 0 or h_m <= 0:
-            self.log("Width/Height must be > 0.")
-            return
-
-        w_h = int(round(w_m / hex_m)) if hex_m else 0
-        h_h = int(round(h_m / hex_m)) if hex_m else 0
-        if (w_h > 99 or h_h > 99) and self.chk_experimental_aoi.isChecked():
+        if dims.get("oversize") and self.chk_experimental_aoi.isChecked():
             self.log(
                 "Experimental AOI size in use (>{} hexes). Large shapefiles may slow "
                 "down QGIS and exports.".format(99)
             )
 
-        # --- rectangle in current map CRS ---
         canvas = iface.mapCanvas()
         center = canvas.center()
-        xmin, xmax = center.x() - w_m/2.0, center.x() + w_m/2.0
-        ymin, ymax = center.y() - h_m/2.0, center.y() + h_m/2.0
-        crs = canvas.mapSettings().destinationCrs()
-
-        # --- unique names / paths ---
         aoi_idx = self._next_aoi_index()
-        w_m_i, h_m_i = int(round(w_m)), int(round(h_m))
-        display_name = f"AOI {aoi_idx} {w_m_i}m x {h_m_i}m"
+        created = self._create_aoi_from_center(center, dims, aoi_idx)
+        if created:
+            self._populate_aoi_combo()
 
-        out_dir = _get_setting("paths/out_dir", "")
-        if not out_dir or not os.path.isdir(out_dir):
-            self.log("No output directory set (Settings).")
+    def create_aois_from_poi(self):
+        dims = self._current_aoi_dimensions()
+        if not dims:
             return
 
-        shp_name = self._safe_filename(f"AOI_{aoi_idx}_{w_m_i}m_x_{h_m_i}m.shp")
-        shp_path = os.path.join(self._layers_dir(), shp_name)
-        os.makedirs(os.path.dirname(shp_path), exist_ok=True)
+        if dims.get("oversize") and self.chk_experimental_aoi.isChecked():
+            self.log(
+                "Experimental AOI size in use (>{} hexes). Large shapefiles may slow "
+                "down QGIS and exports.".format(99)
+            )
 
-        # --- hard overwrite any existing sidecars ---
-        base, _ = os.path.splitext(shp_path)
-        for ext in (".shp", ".shx", ".dbf", ".prj", ".cpg", ".qmd"):
-            p = base + ext
-            if os.path.exists(p):
-                try: os.remove(p)
-                except: pass
-
-        # --- write shapefile directly (no temp layer added to project) ---
-        fields = QgsFields()
-        fields.append(QgsField("id", QVariant.Int))
-
-        writer = QgsVectorFileWriter(
-            shp_path, "UTF-8", fields, QgsWkbTypes.Polygon, crs, "ESRI Shapefile"
-        )
-
-        if writer.hasError() != QgsVectorFileWriter.NoError:
-            self.log(f"Failed to create shapefile: {shp_path}")
-            del writer
+        poi_layer = self._selected_poi_layer()
+        if not poi_layer:
+            self.log("Select a Points of Interest layer to generate AOIs.")
             return
 
-        feat = QgsFeature(fields)
-        feat.setAttribute("id", 1)
-        feat.setGeometry(QgsGeometry.fromPolygonXY([[
-            QgsPointXY(xmin, ymin),
-            QgsPointXY(xmin, ymax),
-            QgsPointXY(xmax, ymax),
-            QgsPointXY(xmax, ymin)
-        ]]))
-        writer.addFeature(feat)
-        del writer  # flush to disk
-
-        # --- load disk layer, style, and add under 'Base' ---
-        aoi = QgsVectorLayer(shp_path, display_name, "ogr")
-        if not aoi.isValid():
-            self.log("Saved AOI shapefile, but failed to load it.")
+        features = list(poi_layer.selectedFeatures())
+        if not features:
+            features = list(poi_layer.getFeatures())
+        if not features:
+            self.log("The selected POI layer has no features to build AOIs from.")
             return
-
-        # Apply QML if present; fallback style otherwise
-        qml_ok = self._apply_style(aoi, "aoi.qml")
-        if not qml_ok:
-            sym = QgsFillSymbol.createSimple({
-                'color': '255,255,255,0',
-                'outline_color': '255,105,180',
-                'outline_width': '0.6'
-            })
-            aoi.setRenderer(QgsSingleSymbolRenderer(sym))
 
         proj = QgsProject.instance()
-        root = proj.layerTreeRoot()
-        base_grp = root.findGroup('Base') or root.addGroup('Base')
+        project_crs = proj.crs()
+        poi_crs = poi_layer.crs()
+        transform = None
+        if poi_crs and project_crs and poi_crs != project_crs:
+            transform = QgsCoordinateTransform(poi_crs, project_crs, proj.transformContext())
 
-        # Remove any *memory* AOIs lingering from earlier runs (optional hygiene)
-        to_remove = [lyr.id() for lyr in proj.mapLayers().values()
-                    if lyr.providerType() == "memory" and lyr.name().startswith("AOI")]
-        if to_remove:
-            proj.removeMapLayers(to_remove)
+        candidate_fields = [f for f in ("name", "Name", "NAME", "label", "Label", "LABEL", "title", "Title", "TITLE")
+                             if poi_layer.fields().indexOf(f) >= 0]
 
-        proj.addMapLayer(aoi, False)
-        base_grp.addLayer(aoi)
+        def _label_for_feature(feat):
+            for field in candidate_fields:
+                value = feat.attribute(field)
+                if value is not None:
+                    text = str(value).strip()
+                    if text:
+                        return text
+            return ""
 
-        canvas.setExtent(aoi.extent())
-        canvas.refresh()
-        self.log(f"{display_name} added to 'Base'. Saved to Shapefile. "
-                            + ("Style: QML applied." if qml_ok else "Style: QML missing (used fallback)."))
+        created_count = 0
+        next_idx = self._next_aoi_index()
+        for feat in features:
+            geom = feat.geometry()
+            if geom is None or geom.isEmpty():
+                continue
+
+            if geom.isMultipart():
+                pts = geom.asMultiPoint()
+                pt = pts[0] if pts else None
+            else:
+                try:
+                    pt = geom.asPoint()
+                except Exception:
+                    pts = geom.asMultiPoint()
+                    pt = pts[0] if pts else None
+
+            if not pt:
+                continue
+
+            if transform:
+                try:
+                    pt = transform.transform(pt)
+                except Exception:
+                    continue
+
+            label_value = _label_for_feature(feat)
+            label_suffix = label_value or f"POI {feat.id()}"
+            file_hint = self._safe_filename(label_value.replace(" ", "_")) if label_value else f"POI_{feat.id()}"
+            if not file_hint:
+                file_hint = f"POI_{feat.id()}"
+            file_hint = file_hint[:48]
+
+            created = self._create_aoi_from_center(QgsPointXY(pt.x(), pt.y()), dims, next_idx, label_suffix=label_suffix, file_hint=file_hint)
+            if created:
+                created_count += 1
+                next_idx += 1
+
+        if created_count:
+            self._populate_aoi_combo()
+            self.log(f"Created {created_count} AOIs from {poi_layer.name()}.")
+        else:
+            self.log("No AOIs were generated from the selected POI layer.")
 
     def _ensure_snapping(self, tol_px=20):
         """Project-level snapping: all layers, vertex+segment, pixel tolerance."""
