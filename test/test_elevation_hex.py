@@ -1,6 +1,7 @@
 """Unit tests for the elevation hex sampling helpers."""
 
 import os
+import sys
 
 import pytest
 
@@ -18,6 +19,8 @@ from utils.elevation_hex import (  # type: ignore
     sample_hex_elevations,
     write_hex_elevation_layer,
 )
+
+elevation_hex = sys.modules["utils.elevation_hex"]
 
 QGIS_APP, CANVAS, IFACE, PARENT = get_qgis_app()
 if QGIS_APP is None:  # pragma: no cover - depends on local QGIS install
@@ -80,6 +83,83 @@ def test_sample_median_and_warnings():
     assert result.method == "median"
     assert result.bucket_size == pytest.approx(5.0)
     assert any("no raster coverage" in warn for warn in result.warnings)
+
+
+def test_sample_handles_missing_src_fid_attribute(monkeypatch):
+    class DummyLayer:
+        def isValid(self):
+            return True
+
+    class FakeFields:
+        def __init__(self, names):
+            self._names = list(names)
+            self._lookup = {name: idx for idx, name in enumerate(self._names)}
+
+        def indexOf(self, name):
+            return self._lookup.get(name, -1)
+
+        def lookupField(self, name):
+            return self.indexOf(name)
+
+        @property
+        def names(self):
+            return list(self._names)
+
+    class FakeFeature:
+        def __init__(self, fid, attrs, fields):
+            self._fid = fid
+            self._attrs = dict(attrs)
+            self._fields = fields
+
+        def id(self):
+            return self._fid
+
+        def attribute(self, name):
+            return self._attrs.get(name)
+
+        def fields(self):
+            return self._fields
+
+        def attributes(self):
+            return [self._attrs.get(name) for name in self._fields.names]
+
+    class FakeLayer:
+        def __init__(self, features, fields):
+            self._features = list(features)
+            self._fields = fields
+
+        def fields(self):
+            return self._fields
+
+        def getFeatures(self):
+            return iter(self._features)
+
+    class FakeZonalStatistics:
+        Mean = 1
+        Median = 2
+        Min = 4
+        Count = 8
+
+        def __init__(self, layer, raster, prefix, band, stats):
+            assert layer is fake_layer
+
+        def calculateStatistics(self, _feedback):
+            return 0
+
+    fields = FakeFields(["src_fid", "hm_mean", "hm_count"])
+    fake_features = [
+        FakeFeature(10, {"src_fid": 42, "hm_mean": 2.0, "hm_count": 3}, fields),
+        FakeFeature(11, {"hm_mean": 6.0, "hm_count": 1}, fields),
+    ]
+    fake_layer = FakeLayer(fake_features, fields)
+
+    monkeypatch.setattr(elevation_hex, "_copy_hex_features", lambda *_: fake_layer)
+    monkeypatch.setattr(elevation_hex, "QgsZonalStatistics", FakeZonalStatistics)
+
+    result = sample_hex_elevations(DummyLayer(), DummyLayer(), method="mean", bucket_size=1)
+
+    assert [sample.feature_id for sample in result.samples] == [42, 11]
+    assert result.count_with_data == 2
 
 
 def test_write_hex_elevation_layer(tmp_path):

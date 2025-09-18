@@ -175,7 +175,41 @@ def sample_hex_elevations(
     count_with_data = 0
 
     for feat in temp_layer.getFeatures():
-        src_fid = int(feat.attribute("src_fid")) if feat.hasAttribute("src_fid") else int(feat.id())
+        src_fid_value: Optional[object] = None
+
+        try:
+            src_fid_value = feat.attribute("src_fid")
+        except AttributeError:
+            src_fid_value = None
+
+        if src_fid_value is None:
+            fields = getattr(feat, "fields", lambda: None)()
+            field_index: Optional[int] = None
+            if fields is not None:
+                lookup = getattr(fields, "lookupField", None)
+                if callable(lookup):
+                    field_index = lookup("src_fid")
+                else:
+                    index_of = getattr(fields, "indexOf", None)
+                    if callable(index_of):
+                        field_index = index_of("src_fid")
+
+            if field_index is not None and field_index >= 0:
+                try:
+                    attrs = feat.attributes()
+                    if 0 <= field_index < len(attrs):
+                        src_fid_value = attrs[field_index]
+                except Exception:
+                    src_fid_value = None
+
+        if src_fid_value is None:
+            src_fid = int(feat.id())
+        else:
+            try:
+                src_fid = int(src_fid_value)
+            except (TypeError, ValueError):
+                src_fid = int(feat.id())
+
         count_val = 0
         if idx_count >= 0:
             try:
