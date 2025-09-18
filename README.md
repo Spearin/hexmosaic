@@ -93,6 +93,7 @@ This plugin helps you build Flashpoint Campaigns map projects in QGIS with a pre
 * Choose **meters** or **hexes**.
 * **Use Canvas Extent** or **Use Anchor as Center** to prefill.
 * Sizes snap to the hex scale.
+* Toggle **Allow experimental AOI sizes** to bypass the 99×99 hex guard when you need oversized test areas. Expect heavier shapefiles and slower exports while enabled.
 * Click **Create AOI**:
 
   * Saves a polygon shapefile to `<Project>/Layers`.

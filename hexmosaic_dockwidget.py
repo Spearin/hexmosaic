@@ -197,6 +197,19 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         f2.addRow(self.lblWHm)
         f2.addRow(self.lblWHh)
         f2.addRow(self.lblCount)
+
+        self.chk_experimental_aoi = QtWidgets.QCheckBox("Allow experimental AOI sizes")
+        self.chk_experimental_aoi.setToolTip(
+            "Bypass the 99×99 hex guard for large test areas. Expect slower QGIS "
+            "renders, heavy shapefiles, and longer export times."
+        )
+        f2.addRow("", self.chk_experimental_aoi)
+
+        self.lbl_experimental_warning = QtWidgets.QLabel()
+        self.lbl_experimental_warning.setWordWrap(True)
+        self.lbl_experimental_warning.setStyleSheet("color: rgb(200, 100, 0);")
+        self.lbl_experimental_warning.setVisible(False)
+        f2.addRow("", self.lbl_experimental_warning)
         f2.addRow(row_btns)
         
         btn_aoi_from_canvas.clicked.connect(self._fill_from_canvas_extent)
@@ -205,6 +218,7 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         for w in (self.hex_scale_edit, self.width_input, self.height_input):
             w.textChanged.connect(self._recalc_aoi_info)
         self.unit_m.toggled.connect(self._recalc_aoi_info)
+        self.chk_experimental_aoi.toggled.connect(self._recalc_aoi_info)
 
         self.tb.addItem(pg_aoi, "2. Map Area")
 
@@ -429,6 +443,9 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
             "grid": {
                 "hex_scale_m": self.hex_scale_edit.text().strip(),
             },
+            "aoi": {
+                "allow_experimental": self.chk_experimental_aoi.isChecked(),
+            },
             "opentopo": {
                 "api_key": self.opentopo_key_edit.text().strip(),
             }
@@ -445,6 +462,7 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         self.styles_dir_edit.setText(get("paths", "styles_dir", default=""))
         self.hex_scale_edit.setText(get("grid", "hex_scale_m", default="500"))
         self.opentopo_key_edit.setText(get("opentopo", "api_key", default=""))
+        self.chk_experimental_aoi.setChecked(bool(get("aoi", "allow_experimental", default=False)))
 
     def _save_project_settings(self):
         """Write hexmosaic.project.json next to the .qgz (if project has a path)."""
@@ -1761,16 +1779,39 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         self.lblWHh.setText(f"Width x Height (hexes): {w_h} × {h_h}")
         self.lblCount.setText(f"Total hexes: {w_h * h_h}")
 
-        # validity: if either dimension > 99 hexes, mark red & disable Create
-        too_wide  = w_h > 99
-        too_tall  = h_h > 99
-        invalid   = too_wide or too_tall or (w_m <= 0 or h_m <= 0)
+        allow_experimental = getattr(self, "chk_experimental_aoi", None)
+        allow_experimental = bool(allow_experimental and allow_experimental.isChecked())
 
-        self._set_warn(self.lblWHh, invalid)
-        self._set_warn(self.lblWHm, invalid)
-        self._set_warn(self.lblCount, invalid)
-        self._set_warn(self.width_input, too_wide)
-        self._set_warn(self.height_input, too_tall)
+        # validity: if either dimension > 99 hexes and experimental mode is off, disable Create
+        too_wide = w_h > 99
+        too_tall = h_h > 99
+        oversize = too_wide or too_tall
+        non_positive = (w_m <= 0 or h_m <= 0)
+        invalid = non_positive or (oversize and not allow_experimental)
+
+        warn_dimensions = oversize or non_positive
+        self._set_warn(self.lblWHh, warn_dimensions)
+        self._set_warn(self.lblWHm, warn_dimensions)
+        self._set_warn(self.lblCount, warn_dimensions)
+        self._set_warn(self.width_input, oversize)
+        self._set_warn(self.height_input, oversize)
+
+        if oversize:
+            if allow_experimental:
+                msg = (
+                    "Experimental AOI sizes can be slow to edit, segment, or export. "
+                    "Monitor QGIS performance before committing to production maps."
+                )
+            else:
+                msg = (
+                    "AOIs larger than 99 hexes are blocked. Enable experimental AOI "
+                    "sizes to proceed."
+                )
+            self.lbl_experimental_warning.setText(msg)
+            self.lbl_experimental_warning.setVisible(True)
+        else:
+            self.lbl_experimental_warning.clear()
+            self.lbl_experimental_warning.setVisible(False)
 
         # disable/enable Create AOI
         self.btn_aoi.setEnabled(not invalid)
@@ -1880,6 +1921,14 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         if w_m <= 0 or h_m <= 0:
             self.log("Width/Height must be > 0.")
             return
+
+        w_h = int(round(w_m / hex_m)) if hex_m else 0
+        h_h = int(round(h_m / hex_m)) if hex_m else 0
+        if (w_h > 99 or h_h > 99) and self.chk_experimental_aoi.isChecked():
+            self.log(
+                "Experimental AOI size in use (>{} hexes). Large shapefiles may slow "
+                "down QGIS and exports.".format(99)
+            )
 
         # --- rectangle in current map CRS ---
         canvas = iface.mapCanvas()

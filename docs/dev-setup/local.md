@@ -95,5 +95,6 @@ The Makefile uses the `scripts/update-strings.sh` and `scripts/compile-strings.s
 | Changes not reflected in QGIS | If you copied files instead of symlinking, redeploy the plugin, then restart QGIS (Plugin Manager caching can delay reloads). |
 | Translation scripts exit with permission denied | Run `chmod +x scripts/update-strings.sh scripts/compile-strings.sh` and retry. |
 | `pyrcc5` not found during `make compile` | Install Qt development tools. On Windows, ensure the QGIS OSGeo4W shell is in PATH; on macOS/Linux install `qt5-base` / `qt5-default`. |
+| QGIS becomes sluggish after enabling **Allow experimental AOI sizes** | Disable the checkbox and keep AOIs within 99×99 hexes when working on production projects; oversized layers should stay in test workspaces. |
 
 Document any additional recurring issues you encounter here to keep the setup guide current.
