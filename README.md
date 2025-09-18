@@ -307,3 +307,165 @@ On project open, HexMosaic will look for this file and hydrate the UI; on **Save
 * Hex Mosaic Palette (painting tools, palettes, legends)
 * DEM dataset selector (default SRTMGL3 90 m)
 * Project config auto-load/save (YAML/JSON)
+
+## TODO — Prioritized (pragmatic, code-aligned)
+
+This list was compiled by cross-checking the README's planned features with the current implementation in `hexmosaic_dockwidget.py`. Items marked "High" are blockers for a usable core workflow or important bug fixes; "Medium" are UX/robustness improvements; "Low" are polish or future enhancements.
+
+High priority
+
+* Implement OSM Import: the UI panel exists as a placeholder but the import/Overpass workflow is not implemented. Required: AOI+buffer clipping, theme presets, save per-theme GPKG, and style application.
+
+* Implement Hex Mosaic Palette (basic): the palette UI is a placeholder. Required: persistent palette storage, paintbrush (single-tile), fill-by-selection, basic exportable legend, and writing palette attributes to the Hex Tiles layer.
+
+* Fix duplicate/contradictory project helpers: `hexmosaic_dockwidget.py` defines `_project_root` and `_export_dir` more than once and with inconsistent folder name casing ("Export" vs "export"). Consolidate these helpers and pick a single canonical export folder path to avoid unexpected behavior on save/export.
+
+* Make DEM download padding metric and robust: `download_dem_from_opentopo` currently pads the AOI in degrees (pad ~= 0.01). Switch to using the existing `_bbox_wgs84_with_margin` helper (or compute a +1 km margin in a meter CRS) so downloads are reliable across latitudes.
+
+* Add defensive tests for export & grid generation: write small unit/integration tests that cover `_compute_export_dims`, `export_png_direct` (happy path with a tiny synthetic AOI), and `build_hex_grid` (memory path). These catch regressions and make refactors safer.
+
+Medium priority
+
+* Allow experimental AOI sizes: add a Map Area checkbox to bypass the current 99-hex width/height guard for large test projects, while logging performance and export caveats.
+* Provide AOI segmentation tools: let users split oversized AOIs into map-ready subareas (equal grid tiling and POI-driven segmentation using OSM POI data), generating the necessary AOI and export metadata.
+
+* Improve elevation styling fallbacks: `_apply_best_elevation_style` is implemented, but enhance logging when candidates are missing and offer a configurable fallback style location. Add a UI affordance to show which style was chosen.
+
+* Improve error handling & retries for OpenTopography downloads: add timeouts, retry policy, and clearer user messages in the Log panel when the network or API returns transient errors.
+
+* OSM/DEM UX: enable progress feedback in the UI (progress bar or spinner) during long operations such as create grid, DEM download, reprojection (warp), and export.
+
+* Consistent style discovery: ensure `_refresh_elevation_styles` and `_apply_style` consistently respect the `Styles directory` setting and handle relative vs absolute paths robustly on Windows.
+
+Low priority
+
+* Advanced palette features: eyedropper, import/export palettes (JSON), fill-by-filter expression editor, and renderer snapshot exports.
+
+* Export helpers: auto-generate legend images and a small JSON manifest describing exported layers, palette metadata and export parameters.
+
+* Packaging, CI and lint: add formatting/linting checks and CI pipelines (unit tests, flake/pylint) to prevent regressions across contributors.
+
+Implemented / Completed (from `hexmosaic_dockwidget.py`)
+
+* Setup UI with project and styles paths, save/load settings (QSettings + per-project JSON), and a settings dialog.
+* Generate Project Structure: creates `Layers` and `Export` folders and ensures layer groups (Mosaic, OSM, Base, Elevation, Reference); adds OpenTopoMap.
+* Anchor + CRS helpers: set anchor at canvas center and compute UTM project CRS from anchor.
+* AOI creation: Create AOI shapefile, apply `aoi.qml` if present, add to `Base` group.
+* Hex grid generation: create grid, clip to AOI, build helpers (edges, vertices, centroids), save shapefiles, build spatial indexes and style layers (QML or programmatic fallback).
+* DEM download (OpenTopography) and reprojection attempt (warp); apply best elevation style by scanning `styles/elevation`.
+* Export: compute pixel/page size and render checked layers to a PNG at exact pixel dimensions.
+
+---
+
+## Automated Mosaic Cleanup Pass — design
+
+Purpose
+* Perform an initial, automated cleanup of the Mosaic (Hex Tiles) using data from the OSM layers and the Elevation raster so the mosaic tiles reflect sensible, standardized terrain & features before manual editing.
+
+Success criteria
+* Each Hex Tile has a deterministic class (tile_type) and elevation bucket (elevation_tier).
+* Edge artifacts (tiny slivers, isolated single-tile noise) are reduced.
+* Clear, repeatable rules (config-driven) so runs are idempotent.
+
+Inputs
+* Hex Tiles layer (polygons) with centroids and tile IDs.
+* OSM-derived vector layers (under Layers/OSM): roads, waterways, water polygons, landcover/buildings, rail, industrial, etc.
+* Elevation raster(s) in Layers/Elevation.
+* Project config (hex size, thresholds, priority_order, mosaic_rules) — uses hexmosaic.config.json and profile.
+
+Outputs
+* Updated Hex Tiles layer with attributes:
+  - tile_type (string) — primary class from priority rules (e.g., Water, Urban, Fields, Forest, Bare, Mixed, Industrial, Marsh).
+  - elevation_tier (int) — bucket index or base elevation (rounded down to nearest 50).
+  - confidence (float 0–1) — classification score.
+  - source_summary (json) — small summary (counts/percentages) of features supporting the decision.
+* Optional: an audit layer (point per hex) with before/after values for QA.
+* Log entries with counts, runtime, and error details.
+
+High-level algorithm
+1. Preparation
+   - Ensure AOI/project CRS is projected (meters).
+   - Load hex tile centroids (for sampling) and compute hex area.
+   - Index OSM layers spatially (in-memory) for fast intersection queries.
+
+2. Per-hex sampling & feature scoring
+   - For each hex:
+     a. Sample the elevation raster (mean, min, max) within the hex; compute elevation_tier = floor(min / 50) * 50.
+     b. Compute area overlap fraction per OSM polygon class (e.g., landuse=forest % of hex area).
+     c. Count/intersect line features by proximity rules (snap_to settings, center-to-edge, edge).
+     d. Run "probes" (centroid and N slice points) if configured; each probe votes for a class.
+   - Combine evidence into scores using config weights:
+     score[class] = w_area * area_frac + w_centroid * centroid_vote + w_probes * probe_votes + w_edge * edge_presence
+   - Apply priority_order as tiebreaker; require majority threshold (config polygon_coverage_majority) to select a tile_type; otherwise set Mixed or leave as Unknown.
+
+3. Elevation tiling
+   - Use elevation_tier to tag tiles. Optionally create separate elevation tiles (layers) or style rules keyed to elevation_tier.
+   - Where elevation varies wildly inside the hex (min→max delta > threshold), flag for manual review and set confidence low.
+
+4. Post-processing cleanup (morphological rules)
+   - Remove tiny isolated islands: identify single-tile runs of a class surrounded by a different class and reassign to neighbor if confidence low and neighbor majority exceeds threshold.
+   - Merge adjacent tiles with identical tile_type and elevation_tier for reporting (not geometry change).
+   - Snap roads/water to centroids/edges according to mosaic_rules; promote long river corridors to Water tiles where configured.
+
+5. Persist updates
+   - Write attribute updates to Hex Tiles layer (transactional where possible).
+   - Optionally export an audit GPKG with per-hex diagnostics.
+
+Scoring & config-driven weights (suggested defaults)
+* Area fraction weight: 0.6
+* Centroid vote weight: 0.25
+* Probe sampling weight: 0.1
+* Edge/line feature boost: 0.05
+* Minimum dominant threshold: 0.6 (use polygon_coverage_majority from config)
+Make these configurable via hexmosaic.config.json or profile.
+
+Edge cases & rules
+* Multi-class ties: prefer higher-priority class from priority_order.
+* Sparse OSM data: fallback to probes + elevation if area fractions insufficient.
+* Water dominance: if water polygon area > 0.4 of hex area OR a river line crosses hex center, mark Water with high confidence.
+* Urban/Industrial adjacency: where industrial polygon overlaps but surrounding hexes are urban/fields, use priority order + confidence smoothing to avoid checkerboarding.
+* No-data elevation: mark elevation_tier as Null and set confidence lower; attempt to re-run when DEM becomes available.
+
+Testing & validation
+* Unit tests:
+  - Scoring aggregation tests with synthetic area/probe inputs.
+  - Elevation bucketing tests (min, negative, high values).
+  - Island removal logic (small synthetic grids).
+* Integration tests:
+  - Run cleanup on a tiny synthetic AOI with known OSM features and a small raster (e.g., ten-by-ten sample) and assert expected tile_types.
+* QA outputs:
+  - Summary report: counts per tile_type, confidence histogram, flagged tiles list.
+  - Exportable audit GPKG for manual review.
+
+Performance considerations
+* Batch-process tiles (vectorized queries) and reuse spatial indexes.
+* Parallelize per-hex scoring where safe (thread/process pool), but persist writes single-threaded or transactional.
+* Provide a progress indicator in the UI and ability to cancel.
+
+Implementation roadmap (phased)
+1. Core utilities (utils/mosaic_cleanup.py)
+   - Functions: sample_elevation_in_polygon, area_fraction_by_attribute, probe_point_votes, compute_scores, choose_tile_type, assign_elevation_tier.
+   - Unit tests for each function.
+2. Classifier engine
+   - Config-driven weights, priority handling, probe strategies.
+   - Integrate with hexmosaic.config.json and profile defaults.
+3. Orchestration & persistence
+   - Background task runner (QGIS task) and UI hook "Run Mosaic Cleanup".
+   - Transactional writes to Hex Tiles attributes and optional audit GPKG writer.
+4. Elevation integration & styles
+   - Auto-create or assign elevation_tier QML styles; optional generation of per-elevation tile layers.
+5. QA, logging, and UI polish
+   - Progress bar, cancel, summary report, and sample viewer.
+   - Add "Preview" mode (do not write) and "Apply" mode.
+
+Operational notes
+* Expose a "dry-run" / "preview" toggle that outputs the audit layer only.
+* Make thresholds and weights editable (settings dialog or per-project config).
+* Encourage running cleanup after initial OSM import and DEM download.
+
+Change proposal
+* Append this section to README.md and add a new module file utils/mosaic_cleanup.py with unit tests under tests/test_mosaic_cleanup.py. I can create the initial utils module and a small unit test scaffold next — confirm and I will write the
+
+
+
+
