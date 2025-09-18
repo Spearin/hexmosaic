@@ -16,60 +16,81 @@ These playbooks outline end-to-end flows the automation agent can follow. Always
 
 ---
 
-## Cloud Workspace Automation (Current Priority)
-Goal: Ensure automation agents can provision and operate HexMosaic from cloud-hosted environments (CI runners, devcontainers, disposable workspaces).
+## Hex Elevation Palette Layer (Current Priority)
+Goal: Deliver the first milestone of the Hex Mosaic Palette initiative by creating a hex-aligned elevation layer that mirrors DEM styling and exposes per-hex values for downstream exports.
 
 ### Context
-- Cloud setup reference: `docs/dev-setup/cloud.md`.
-- Pipelines rely on `Makefile` targets (`make pylint`, `make test`, `make doc`) and `pb_tool.cfg` for packaging.
-- Container or workflow definitions should live in version control (e.g., `.ci/`, `.devcontainer/` when introduced) for reviewability.
-- Protect API keys and tokens; keep secrets out of logs and artifacts.
+- README quick start items 7-9 and `## 5) Generate Hex Elevation Layer` describe the expected workflow.
+- UI hooks live under the Elevation tab in `hexmosaic_dockwidget.py` (look near existing DEM download handlers).
+- Hex sampling utilities should live in a new module (`utils/elevation_hex.py` or similar) with unit coverage.
+- Output shapefiles belong in `<Project>/Layers/Elevation/HexPalette/` and must load into the layer tree under **Elevation > Hex Palette**.
 
-### Recipe 1 - Build a QGIS-enabled base image
-
-**Prep**
-- Review the base image options table in `docs/dev-setup/cloud.md` and choose the scenario that matches the target platform.
-- Collect QGIS version requirements and confirm any corporate proxy or registry constraints.
-- Identify where the resulting Dockerfile or image definition will live in the repo.
-
-**Implementation**
-1. Start from the recommended image (`mcr.microsoft.com/devcontainers/python:3.11`, `qgis/qgis:release-3_34`, or similar) and add a label describing the HexMosaic revision.
-2. Install QGIS packages following the Debian/Ubuntu or Fedora snippets in `docs/dev-setup/cloud.md`, including build tooling and Qt extras (`qttools5-dev-tools` or `qt5-qttools`).
-3. Pre-install Python tooling (`pip`, `wheel`, `pb_tool`, `pytest`, `pylint`) and bake in any repository-specific requirements files when available.
-4. Export `QGIS_PREFIX_PATH`, `PYTHONPATH`, and `QT_QPA_PLATFORM=offscreen` inside the image (e.g., `ENV` directives or `/etc/profile.d/qgis.sh`).
-5. Check the definition into version control and document how to rebuild/push the image.
-
-**Validation**
-- `docker build` (or platform equivalent) succeeds and `qgis --version` reports the expected build.
-- `python -c "import qgis"` runs inside the container without raising `ImportError`.
-- `pytest test --maxfail=1 -k smoke` passes when executed with the baked-in environment variables.
-
-**Escalation**
-- QGIS repositories are unreachable or require credentials you cannot provision.
-- Package installs break due to distro conflicts; capture logs and pause for human input before hacking around them.
-
-### Recipe 2 - Wire CI workflows to the base image
+### Recipe 1 - Surface the UI entry point
 
 **Prep**
-- Locate or create the workflow/pipeline files (`.github/workflows/`, Azure Pipelines, etc.).
-- Decide which branches and triggers should run the cloud build.
-- Confirm which make targets or scripts constitute the minimum gating suite.
+- Review existing Elevation tab widgets and signals in `hexmosaic_dockwidget.py`.
+- Identify how DEM selection and hex layer selection are currently exposed (combos populated via `_populate_layers`).
 
 **Implementation**
-1. Pull the published base image (or build it in the workflow) and set it as the job container/executor.
-2. Export the required environment variables (`QGIS_PREFIX_PATH`, `PYTHONPATH`, `QT_QPA_PLATFORM=offscreen`) at the job level.
-3. Add sequential steps for lint (`make pylint`), style (`make pep8` if used), tests (`pytest test`), docs (`make doc` when needed), and packaging (`pb_tool package`) as appropriate for the branch.
-4. Wrap GUI-touching steps with `xvfb-run -s "-screen 0 1024x768x24"` when headless execution is required.
-5. Publish artifacts (e.g., `reports/junit.xml`, coverage, `hexmosaic.zip`, `help/build/html`) and surface failures with clear log sections.
+1. Add controls for selecting the DEM raster, hex layer, sampling method (mean/median/min), bucket size, and output overwrite toggle.
+2. Wire the **Generate Hex Elevation Layer** button to a new slot that validates selections and kicks off a `QgsTask` for background processing.
+3. Ensure the task dialog surfaces progress, cancellation, and user-facing error messages.
+4. Persist last-used options in project settings via `_collect_ui_settings` / `_apply_ui_settings`.
 
 **Validation**
-- Dry-run the workflow locally (e.g., `act`) or trigger it on a feature branch and verify all stages pass.
-- Confirm artifacts upload and secrets stay masked in logs.
-- Ensure pipeline duration meets expectations; if not, profile and adjust caching (next recipe).
+- Manual: create a small AOI, build the grid, download a DEM, and confirm the button enables/disables appropriately.
+- Automated: add a UI smoke test (e.g., using `QTest`) that verifies the controls appear and validation blocks empty selections.
 
 **Escalation**
-- Workflow runners lack permissions to pull the image or store artifacts.
-- Headless Qt steps still fail after setting `QT_QPA_PLATFORM=offscreen` and using `xvfb-run`.
+- If the UI layout overflows the current tab, capture a screenshot and ask for layout direction before rearranging other controls.
+
+### Recipe 2 - Implement the elevation sampler
+
+**Prep**
+- Inspect existing raster sampling helpers (search for `sample_raster` or zonal statistics usage).
+- Decide on raster aggregation defaults (mean, floor, bucket size) and how to handle nodata pixels.
+
+**Implementation**
+1. Create a helper module (e.g., `utils/elevation_hex.py`) that accepts a raster layer, feature iterator, sampling method, and bucket size.
+2. Use `QgsZonalStatistics` or manual `QgsRasterDataProvider` sampling to compute per-hex elevation summaries.
+3. Quantize samples into integer buckets (`elev_bucket`) while keeping the raw floating value (`elev_value`).
+4. Return structured results with error handling for nodata coverage, mixed CRS, or failed providers.
+5. Add unit tests with synthetic raster/hex fixtures to cover mean vs median behaviour, nodata cases, and bucket rounding.
+
+**Validation**
+- Unit tests pass locally (`pytest test/test_elevation_hex.py`).
+- Manual spot-check: compare a few sampled hexes against the DEM using the identify tool.
+
+**Escalation**
+- Significant performance issues (>2s per 1k hexes) after basic optimisation - capture profiling info before pausing.
+
+### Recipe 3 - Persist, style, and register outputs
+
+**Prep**
+- Review `hexmosaic_dockwidget.py` for existing shapefile writers and style application helpers.
+- Locate DEM styling logic (`_apply_style`) to reuse palette/colour ramp metadata.
+
+**Implementation**
+1. Write the sampled hex features to `<Project>/Layers/Elevation/HexPalette/<AOI>_hex_elevation.shp`, overwriting only when the user opts in.
+2. Add metadata attributes: `elev_value`, `elev_bucket`, `dem_source`, `bucket_method`, `generated_at`.
+3. Load the layer into the project under **Elevation > Hex Palette** and apply DEM-derived styling (fallback to `styles/elevation_hex.qml`).
+4. Update export helpers so this layer can be toggled alongside other elevation products.
+5. Log a concise summary (hex count, min/max bucket, duration) to assist QA.
+
+**Validation**
+- Manual: run end-to-end with a real DEM and confirm the layer appears with uniform colour per hex.
+- Automated: extend integration tests to ensure the shapefile schema matches expectations and styling metadata attaches without crashing.
+
+**Escalation**
+- Style cloning fails across QGIS versions - capture layer XML dumps and request design input.
+
+### Supporting Tasks
+- Update `docs/howtos/` with a focused "Generate Hex Elevation Layer" walkthrough once the feature stabilises.
+- Add regression fixtures (small raster + hex grid) under `test/fixtures/elevation_hex/`.
+- Coordinate with design on palette quantisation thresholds before finalising defaults.
+
+---
+
 
 ### Recipe 3 - Manage secrets, caching, and data dependencies
 
@@ -90,7 +111,7 @@ Goal: Ensure automation agents can provision and operate HexMosaic from cloud-ho
 - Artifact downloads succeed for reviewers or deployment jobs.
 
 **Escalation**
-- Secrets cannot be stored due to policy or legal constraints—stop and request guidance.
+- Secrets cannot be stored due to policy or legal constraintsï¿½stop and request guidance.
 - Cache restores become unstable or corrupted; gather logs before purging caches and escalating.
 
 ---
@@ -103,6 +124,7 @@ Goal: Extend the Map Area tab so oversized AOIs can be subdivided into game-read
 - AOIs are persisted as shapefiles under `<Project>/Layers/Base/` (`create_aoi` method ~1860ff).
 - README high-level description: `README.md` > "2) Map Area (AOI)" and TODO backlog (Medium priority, AOI segmentation bullet).
 - Any segmentation metadata should align with forthcoming export workflows (see `export_png_direct` around line 1600).
+
 
 ### Recipe 1 - Enable "Experimental AOI Sizes" Toggle
 This unlocks AOIs wider/taller than 99 hexes to support segmentation workflows.

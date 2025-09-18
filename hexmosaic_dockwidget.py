@@ -1858,11 +1858,11 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
             styled = self._apply_style(seg_layer, "aoi_segment.qml") or self._apply_style(seg_layer, "aoi.qml")
             if not styled:
                 sym = QgsFillSymbol.createSimple({
-                        'color': '255,255,255,0',
-                        'outline_color': '0,150,136',
-                        'outline_width': '0.6'
-                    })
-                    seg_layer.setRenderer(QgsSingleSymbolRenderer(sym))
+                    'color': '255,255,255,0',
+                    'outline_color': '0,150,136',
+                    'outline_width': '0.6'
+                })
+                seg_layer.setRenderer(QgsSingleSymbolRenderer(sym))
 
                 proj.addMapLayer(seg_layer, False)
                 group.addLayer(seg_layer)
@@ -2893,3 +2893,4 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
             f"Hex grid + helpers saved to {os.path.relpath(base_dir, out_root)} and loaded permanently. "
             + ("Spatial indexes built." if ix_ok else "Spatial indexes built where possible.")
         )
+

@@ -42,14 +42,20 @@ This plugin helps you build Flashpoint Campaigns map projects in QGIS with a pre
      **Hex Tiles**, **Hex Grid Edges**, **Intersection Helpers**, **Centroid Helpers**.
 7. (Optional) **4. Set Elevation Heightmap**:
 
-   * **Download SRTM for AOI** (OpenTopography) → auto-adds to **Elevation** and styles it.
-     – or –
-   * Browse **DEM file** and **Apply Style to Layer**.
-8. **7. Export Map**:
+   * **Download SRTM for AOI** (OpenTopography) - auto-adds to **Elevation** and styles it.
+   * Browse **DEM file** and **Apply Style to Layer** if you already have a raster on disk.
+
+8. (Optional) **5. Generate Hex Elevation Layer**:
+
+   * Pick the DEM and **Hex Tiles** layers in the Elevation tab.
+   * Click **Generate Hex Elevation Layer** to sample the DEM under each hex, save a new polygon layer, and reuse the DEM palette.
+   * Confirm the new layer appears under **Elevation > Hex Palette** with `elev_value` and `elev_bucket` attributes ready for export.
+
+9. **7. Export Map**:
 
    * **Refresh Layers** to mirror the layer tree.
    * Check the groups/layers to export.
-   * Pick AOI (Export) → **Compute** → **Export PNG (direct)**.
+   * Pick AOI (Export) - **Compute** - **Export PNG (direct)**.
      PNG is written to `<Project>/Export`.
 
 ---
@@ -163,7 +169,35 @@ This plugin helps you build Flashpoint Campaigns map projects in QGIS with a pre
 
 ---
 
-## 5) Import OSM (Design Preview — upcoming)
+## 5) Generate Hex Elevation Layer (Hex Mosaic Palette phase 1)
+
+The Hex Elevation layer converts the pixel-based DEM into a hex-aligned heightmap that matches the palette the game expects. Every hex receives a single representative elevation value and is rendered with the same colour ramp as the source DEM, eliminating noisy transitions.
+
+### Requirements
+- A generated **Hex Tiles** layer for the active AOI.
+- A DEM layer loaded under **Elevation** and already styled with the desired palette.
+- Project CRS in meters so zonal statistics operate on consistent geometry.
+
+### Workflow
+1. Open the **4. Set Elevation Heightmap** tab and locate the **Generate Hex Elevation Layer** controls.
+2. Choose the DEM raster and **Hex Tiles** layer (defaults apply when only one candidate is found).
+3. Select the sampling method (default: mean of DEM values clipped to each hex) and the elevation bucket size (default: 1).
+4. Click **Generate Hex Elevation Layer**. The plugin samples the DEM, writes `<Project>/Layers/Elevation/HexPalette/<AOI>_hex_elevation.shp`, and loads it under **Elevation > Hex Palette**.
+5. Review the attributes: `elev_value` (floating point sample), `elev_bucket` (rounded bucket), `dem_source` (raster id), and `bucket_method`.
+
+### Styling and usage
+- The layer inherits symbology from the DEM via `QgsMapLayerStyle`; if that fails, the fallback `styles/elevation_hex.qml` is applied.
+- Toggle the new layer on/off to compare against the raw DEM.
+- Use this layer when exporting palette-friendly heightmaps or when transferring data to the game editor.
+
+### Troubleshooting
+- **Missing DEM or hex tiles**: the action is disabled until both layers exist; load them and try again.
+- **Mixed CRS warning**: reproject the DEM or regenerate the grid so both layers share the project CRS.
+- **Unexpected flat values**: confirm the DEM covers the full AOI and adjust the bucket size if you need finer gradations.
+
+---
+
+## 6) Import OSM (Design Preview — upcoming)
 
 > *This panel is a design preview so we can iterate before development.*
 
@@ -189,7 +223,12 @@ We’ll also include a **“Refresh from OSM”** action to re-pull and re-clip 
 
 ---
 
-## 6) Hex Mosaic Palette (Design Preview — upcoming)
+## 7) Hex Mosaic Palette (Design Preview — upcoming)
+
+Phase 1 delivers the hex-aligned elevation layer documented above; the interactive painting tools below remain in planning while we validate the palette workflow with real projects.
+
+
+
 
 > *Design preview.*
 
