@@ -9,6 +9,8 @@ import math
 import urllib.request
 import urllib.parse
 import json, shutil
+import time
+from datetime import datetime
 from qgis.utils import iface # pyright: ignore[reportMissingImports]
 from qgis.PyQt import QtCore, QtWidgets # pyright: ignore[reportMissingImports]
 from qgis.PyQt.QtCore import pyqtSignal, QVariant, Qt, QSettings # pyright: ignore[reportMissingImports]
@@ -17,10 +19,16 @@ from qgis.core import ( # pyright: ignore[reportMissingImports]
     QgsVectorLayer, QgsRasterLayer, QgsCoordinateReferenceSystem, QgsField, QgsFeature, QgsGeometry, QgsPointXY, QgsProject,
     QgsVectorFileWriter, QgsSnappingConfig, QgsTolerance,
     QgsFillSymbol, QgsMarkerSymbol, QgsSingleSymbolRenderer,
-    QgsFields, QgsWkbTypes, QgsLineSymbol,
+    QgsFields, QgsWkbTypes, QgsLineSymbol, QgsMapLayerStyle,
     QgsUnitTypes, QgsLayoutSize, QgsLayoutPoint, QgsPrintLayout,
     QgsLayoutItemMap, QgsLayoutExporter, QgsRectangle, QgsMapSettings, QgsMapRendererCustomPainterJob,
     QgsCoordinateTransform, QgsCoordinateTransformContext, QgsProviderRegistry
+)
+
+from .utils.elevation_hex import ( # type: ignore
+    format_sampling_summary,
+    sample_hex_elevations,
+    write_hex_elevation_layer,
 )
 
 class HexMosaicSettingsDialog(QtWidgets.QDialog):
@@ -80,6 +88,9 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         self._segment_preview_layers = {}
         # Remember desired POI layer by name until the combo is populated
         self._pending_poi_layer_name = ""
+        # Remember DEM/hex selections for the elevation palette controls
+        self._pending_hex_dem_layer_name = ""
+        self._pending_hex_tile_layer_name = ""
 
         # -- container & layout --
         container = QtWidgets.QWidget(self); self.setWidget(container)
@@ -341,15 +352,53 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         f4.addRow("DEM file:", row_ep)
         f4.addRow("Style:", self.elev_style_combo)
         f4.addRow(btn_refresh_styles, btn_apply_elev)
+
+        grp_hex_palette = QtWidgets.QGroupBox("Hex Elevation Layer")
+        hex_form = QtWidgets.QFormLayout(grp_hex_palette)
+
+        self.cbo_hex_dem_layer = QtWidgets.QComboBox()
+        self.cbo_hex_tiles_layer = QtWidgets.QComboBox()
+        btn_refresh_hex_layers = QtWidgets.QPushButton("Refresh layer lists")
+
+        row_dem_select = QtWidgets.QHBoxLayout()
+        row_dem_select.addWidget(self.cbo_hex_dem_layer)
+        row_dem_select.addWidget(btn_refresh_hex_layers)
+
+        hex_form.addRow("DEM raster:", row_dem_select)
+        hex_form.addRow("Hex layer:", self.cbo_hex_tiles_layer)
+
+        self.cbo_hex_sample_method = QtWidgets.QComboBox()
+        self.cbo_hex_sample_method.addItem("Mean (average)", "mean")
+        self.cbo_hex_sample_method.addItem("Median", "median")
+        self.cbo_hex_sample_method.addItem("Minimum", "min")
+        hex_form.addRow("Sampling method:", self.cbo_hex_sample_method)
+
+        self.spin_hex_bucket = QtWidgets.QSpinBox()
+        self.spin_hex_bucket.setRange(1, 1000)
+        self.spin_hex_bucket.setValue(1)
+        hex_form.addRow("Bucket size:", self.spin_hex_bucket)
+
+        self.chk_hex_overwrite = QtWidgets.QCheckBox("Overwrite existing output")
+        hex_form.addRow(self.chk_hex_overwrite)
+
+        self.btn_generate_hex_elev = QtWidgets.QPushButton("Generate Hex Elevation Layer")
+        self.btn_generate_hex_elev.setEnabled(False)
+        hex_form.addRow(self.btn_generate_hex_elev)
+
+        f4.addRow(grp_hex_palette)
         self.tb.addItem(pg_elev, "4. Set Elevation Heightmap")
 
         # wiring
         btn_refresh_aoi_elev.clicked.connect(self._populate_aoi_combo)
         btn_refresh_aoi_elev.clicked.connect(self._sync_aoi_combo_to_elev)
         btn_refresh_styles.clicked.connect(self._refresh_elevation_styles)
-        self._safe_disconnect(btn_apply_elev.clicked, self._apply_elevation_style_and_add) 
+        self._safe_disconnect(btn_apply_elev.clicked, self._apply_elevation_style_and_add)
         self._safe_disconnect(btn_apply_elev.clicked)
         btn_apply_elev.clicked.connect(self._apply_style_to_existing_dem)
+        btn_refresh_hex_layers.clicked.connect(self._populate_hex_elevation_inputs)
+        self.cbo_hex_dem_layer.currentIndexChanged.connect(self._update_hex_elevation_button_state)
+        self.cbo_hex_tiles_layer.currentIndexChanged.connect(self._update_hex_elevation_button_state)
+        self.btn_generate_hex_elev.clicked.connect(self.generate_hex_elevation_layer)
 
         # --- 5) IMPORT OSM (placeholder) ---
         pg_osm = QtWidgets.QWidget(); f5 = QtWidgets.QVBoxLayout(pg_osm)
@@ -461,6 +510,8 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
             proj.readProject.connect(self._on_project_read)       # fired after a project is opened
             proj.projectSaved.connect(self._on_project_saved)     # fired after save/save-as
             proj.cleared.connect(self._on_project_cleared)        # new project or closed
+            proj.layersAdded.connect(lambda *_: self._populate_hex_elevation_inputs())
+            proj.layersRemoved.connect(lambda *_: self._populate_hex_elevation_inputs())
         except Exception:
             # Older QGIS builds may have slightly different signal names; safe to ignore if missing
             pass
@@ -470,6 +521,7 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         self._load_project_settings()
         self._populate_poi_combo()
         self._populate_aoi_combo()
+        self._populate_hex_elevation_inputs()
         self._refresh_elevation_styles()
         self._sync_export_aoi_combo()
         self._rebuild_export_tree()
@@ -522,6 +574,13 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
                 "rows": int(self.seg_rows_spin.value()) if hasattr(self, "seg_rows_spin") else 1,
                 "cols": int(self.seg_cols_spin.value()) if hasattr(self, "seg_cols_spin") else 1,
                 "metadata": self._segment_metadata,
+            },
+            "hex_elevation": {
+                "dem_layer_name": self.cbo_hex_dem_layer.currentText().strip() if hasattr(self, "cbo_hex_dem_layer") else "",
+                "hex_layer_name": self.cbo_hex_tiles_layer.currentText().strip() if hasattr(self, "cbo_hex_tiles_layer") else "",
+                "method": self.cbo_hex_sample_method.currentData() if hasattr(self, "cbo_hex_sample_method") else "mean",
+                "bucket_size": int(self.spin_hex_bucket.value()) if hasattr(self, "spin_hex_bucket") else 1,
+                "overwrite": bool(self.chk_hex_overwrite.isChecked()) if hasattr(self, "chk_hex_overwrite") else False,
             }
         }
 
@@ -584,6 +643,30 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         self._segment_metadata = metadata
         self._update_segment_buttons_state()
 
+        hex_data = data.get("hex_elevation", {}) if isinstance(data, dict) else {}
+        if hasattr(self, "spin_hex_bucket"):
+            try:
+                bucket_val = int(hex_data.get("bucket_size", self.spin_hex_bucket.value()))
+            except (TypeError, ValueError):
+                bucket_val = self.spin_hex_bucket.value()
+            self.spin_hex_bucket.setValue(max(self.spin_hex_bucket.minimum(), min(self.spin_hex_bucket.maximum(), bucket_val)))
+        if hasattr(self, "chk_hex_overwrite"):
+            self.chk_hex_overwrite.setChecked(bool(hex_data.get("overwrite", False)))
+        if hasattr(self, "cbo_hex_sample_method"):
+            method_val = hex_data.get("method")
+            if method_val is not None:
+                idx = self.cbo_hex_sample_method.findData(method_val)
+                if idx < 0:
+                    idx = self.cbo_hex_sample_method.findText(str(method_val), Qt.MatchFixedString)
+                if idx >= 0:
+                    self.cbo_hex_sample_method.setCurrentIndex(idx)
+        dem_pending = hex_data.get("dem_layer_name")
+        if isinstance(dem_pending, str):
+            self._pending_hex_dem_layer_name = dem_pending
+        hex_pending = hex_data.get("hex_layer_name")
+        if isinstance(hex_pending, str):
+            self._pending_hex_tile_layer_name = hex_pending
+
     def _save_project_settings(self):
         """Write hexmosaic.project.json next to the .qgz (if project has a path)."""
         p = self._project_settings_path()
@@ -637,6 +720,13 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         self._remove_all_segment_previews()
         self._populate_aoi_combo()
         self._populate_poi_combo()
+        self._pending_hex_dem_layer_name = ""
+        self._pending_hex_tile_layer_name = ""
+        if hasattr(self, "cbo_hex_dem_layer"):
+            self.cbo_hex_dem_layer.clear()
+        if hasattr(self, "cbo_hex_tiles_layer"):
+            self.cbo_hex_tiles_layer.clear()
+        self._update_hex_elevation_button_state()
 
     # ---------------------------------------------------------------
     # Config helpers
@@ -966,6 +1056,15 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         os.makedirs(d, exist_ok=True)
         return d
 
+    def _layers_elevation_hex_dir(self) -> str:
+        d = os.path.join(self._layers_elevation_dir(), "HexPalette")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _hex_elevation_output_path(self, base_name: str) -> str:
+        safe = self._safe_filename(base_name.replace(" ", "_"))
+        return os.path.join(self._layers_elevation_hex_dir(), f"{safe}_hex_elevation.shp")
+
     def _refresh_elevation_styles(self):
         self.elev_style_combo.clear()
         styles_dir = self.styles_dir_edit.text().strip()
@@ -1131,6 +1230,129 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
                     self.log("DEM style: failed to apply selected QML.")
 
     
+    def generate_hex_elevation_layer(self):
+        dem_layer = self._selected_hex_dem_layer()
+        if not dem_layer or not dem_layer.isValid():
+            self.log("Hex elevation: select a DEM raster layer first.")
+            return
+
+        hex_layer = self._selected_hex_tiles_layer()
+        if not hex_layer or not hex_layer.isValid():
+            self.log("Hex elevation: select a hex polygon layer to sample.")
+            return
+
+        method = self.cbo_hex_sample_method.currentData() if hasattr(self, "cbo_hex_sample_method") else "mean"
+        try:
+            bucket_size = float(self.spin_hex_bucket.value()) if hasattr(self, "spin_hex_bucket") else 1.0
+        except Exception:
+            bucket_size = 1.0
+            if hasattr(self, "spin_hex_bucket"):
+                self.spin_hex_bucket.setValue(1)
+
+        overwrite = bool(self.chk_hex_overwrite.isChecked()) if hasattr(self, "chk_hex_overwrite") else False
+
+        base_layer = self._selected_aoi_layer_for_elev() or self._selected_aoi_layer()
+        base_name = base_layer.name() if base_layer else hex_layer.name()
+        shp_path = self._hex_elevation_output_path(base_name)
+
+        if os.path.exists(shp_path) and not overwrite:
+            self.log("Hex elevation: output exists. Enable overwrite to regenerate.")
+            return
+
+        start = time.time()
+        try:
+            result = sample_hex_elevations(dem_layer, hex_layer, method=method, bucket_size=bucket_size)
+        except Exception as exc:
+            self.log(f"Hex elevation: sampling failed – {exc}")
+            return
+
+        if not result.samples:
+            self.log("Hex elevation: no features were sampled.")
+            return
+
+        self._clean_vector_sidecars(shp_path)
+
+        dem_source = os.path.basename(dem_layer.source() or "") or dem_layer.name()
+        generated_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+        ok, err = write_hex_elevation_layer(
+            hex_layer,
+            result,
+            shp_path,
+            dem_source=dem_source,
+            bucket_method=str(method),
+            generated_at=generated_at,
+        )
+        if not ok:
+            self.log(f"Hex elevation: failed to write shapefile – {err}")
+            return
+
+        layer_name = f"{base_name} – Hex Elevation"
+        new_layer = QgsVectorLayer(shp_path, layer_name, "ogr")
+        if not new_layer or not new_layer.isValid():
+            self.log("Hex elevation: output layer saved but could not be loaded.")
+            return
+
+        alias_map = {
+            "elev_value": "elev_value",
+            "elev_bucket": "elev_bucket",
+            "dem_source": "dem_source",
+            "bucket_method": "bucket_method",
+            "generated_at": "generated_at",
+        }
+        for field_name, alias in alias_map.items():
+            idx = new_layer.fields().indexOf(field_name)
+            if idx < 0 and len(field_name) > 10:
+                idx = new_layer.fields().indexOf(field_name[:10])
+            if idx >= 0:
+                new_layer.setFieldAlias(idx, alias)
+
+        new_layer.setCustomProperty("hexmosaic/dem_source", dem_source)
+        new_layer.setCustomProperty("hexmosaic/bucket_method", method)
+        new_layer.setCustomProperty("hexmosaic/bucket_size", float(result.bucket_size))
+        new_layer.setCustomProperty("hexmosaic/generated_at", generated_at)
+
+        styled = False
+        try:
+            style = QgsMapLayerStyle()
+            if style.readFromLayer(dem_layer):
+                styled = bool(style.apply(new_layer))
+        except Exception:
+            styled = False
+
+        if not styled:
+            styled = self._apply_style(new_layer, "elevation_hex.qml")
+
+        if styled:
+            new_layer.triggerRepaint()
+
+        proj = QgsProject.instance()
+        target_group = self._ensure_nested_groups(["Elevation", "Hex Palette"])
+
+        out_norm = os.path.normcase(os.path.abspath(shp_path))
+        existing = [
+            lyr.id()
+            for lyr in proj.mapLayers().values()
+            if hasattr(lyr, "source")
+            and os.path.normcase(os.path.abspath(str(lyr.source()))) == out_norm
+        ]
+        if existing:
+            proj.removeMapLayers(existing)
+
+        proj.addMapLayer(new_layer, False)
+        target_group.addLayer(new_layer)
+
+        elapsed = time.time() - start
+        summary = format_sampling_summary(result)
+        self.log(f"Hex elevation: saved {os.path.basename(shp_path)} ({summary}, {elapsed:.1f}s).")
+
+        for warn in result.warnings:
+            self.log(f"Hex elevation warning: {warn}")
+
+        self._populate_hex_elevation_inputs()
+        self._rebuild_export_tree()
+
+
     def _aoi_extent_wgs84(self):
         """
         Returns (west, east, south, north) of the selected AOI in EPSG:4326.
@@ -1478,6 +1700,109 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
             if geom_type == QgsWkbTypes.PointGeometry or geom_type == 0:
                 candidates.append(lyr)
         return sorted(candidates, key=lambda L: L.name().lower())
+
+    def _gather_raster_layers(self):
+        proj = QgsProject.instance()
+        layers = []
+        for lyr in proj.mapLayers().values():
+            if isinstance(lyr, QgsRasterLayer):
+                layers.append(lyr)
+        return sorted(layers, key=lambda L: L.name().lower())
+
+    def _gather_hex_layers(self):
+        proj = QgsProject.instance()
+        layers = []
+        for lyr in proj.mapLayers().values():
+            if isinstance(lyr, QgsVectorLayer):
+                try:
+                    if QgsWkbTypes.geometryType(lyr.wkbType()) == QgsWkbTypes.PolygonGeometry:
+                        layers.append(lyr)
+                except Exception:
+                    continue
+        return sorted(layers, key=lambda L: L.name().lower())
+
+    def _populate_hex_elevation_inputs(self):
+        if not hasattr(self, "cbo_hex_dem_layer"):
+            return
+
+        rasters = self._gather_raster_layers()
+        prev_dem_id = self.cbo_hex_dem_layer.currentData() if self.cbo_hex_dem_layer.count() else ""
+        prev_dem_text = self.cbo_hex_dem_layer.currentText() if self.cbo_hex_dem_layer.count() else ""
+
+        self.cbo_hex_dem_layer.blockSignals(True)
+        self.cbo_hex_dem_layer.clear()
+        for lyr in rasters:
+            self.cbo_hex_dem_layer.addItem(lyr.name(), lyr.id())
+
+        matched_dem = False
+        if prev_dem_id:
+            idx = self.cbo_hex_dem_layer.findData(prev_dem_id)
+            if idx >= 0:
+                self.cbo_hex_dem_layer.setCurrentIndex(idx)
+                matched_dem = True
+        if not matched_dem and self._pending_hex_dem_layer_name:
+            idx = self.cbo_hex_dem_layer.findText(self._pending_hex_dem_layer_name, Qt.MatchFixedString)
+            if idx >= 0:
+                self.cbo_hex_dem_layer.setCurrentIndex(idx)
+                matched_dem = True
+        if not matched_dem and prev_dem_text:
+            idx = self.cbo_hex_dem_layer.findText(prev_dem_text, Qt.MatchFixedString)
+            if idx >= 0:
+                self.cbo_hex_dem_layer.setCurrentIndex(idx)
+                matched_dem = True
+        if matched_dem:
+            self._pending_hex_dem_layer_name = ""
+        self.cbo_hex_dem_layer.blockSignals(False)
+
+        hex_layers = self._gather_hex_layers()
+        prev_hex_id = self.cbo_hex_tiles_layer.currentData() if self.cbo_hex_tiles_layer.count() else ""
+        prev_hex_text = self.cbo_hex_tiles_layer.currentText() if self.cbo_hex_tiles_layer.count() else ""
+
+        self.cbo_hex_tiles_layer.blockSignals(True)
+        self.cbo_hex_tiles_layer.clear()
+        for lyr in hex_layers:
+            self.cbo_hex_tiles_layer.addItem(lyr.name(), lyr.id())
+
+        matched_hex = False
+        if prev_hex_id:
+            idx = self.cbo_hex_tiles_layer.findData(prev_hex_id)
+            if idx >= 0:
+                self.cbo_hex_tiles_layer.setCurrentIndex(idx)
+                matched_hex = True
+        if not matched_hex and self._pending_hex_tile_layer_name:
+            idx = self.cbo_hex_tiles_layer.findText(self._pending_hex_tile_layer_name, Qt.MatchFixedString)
+            if idx >= 0:
+                self.cbo_hex_tiles_layer.setCurrentIndex(idx)
+                matched_hex = True
+        if not matched_hex and prev_hex_text:
+            idx = self.cbo_hex_tiles_layer.findText(prev_hex_text, Qt.MatchFixedString)
+            if idx >= 0:
+                self.cbo_hex_tiles_layer.setCurrentIndex(idx)
+                matched_hex = True
+        if matched_hex:
+            self._pending_hex_tile_layer_name = ""
+        self.cbo_hex_tiles_layer.blockSignals(False)
+
+        self._update_hex_elevation_button_state()
+
+    def _selected_hex_dem_layer(self):
+        if not hasattr(self, "cbo_hex_dem_layer"):
+            return None
+        lyr_id = self.cbo_hex_dem_layer.currentData()
+        return QgsProject.instance().mapLayer(lyr_id) if lyr_id else None
+
+    def _selected_hex_tiles_layer(self):
+        if not hasattr(self, "cbo_hex_tiles_layer"):
+            return None
+        lyr_id = self.cbo_hex_tiles_layer.currentData()
+        return QgsProject.instance().mapLayer(lyr_id) if lyr_id else None
+
+    def _update_hex_elevation_button_state(self):
+        if not hasattr(self, "btn_generate_hex_elev"):
+            return
+        dem = self._selected_hex_dem_layer()
+        tiles = self._selected_hex_tiles_layer()
+        self.btn_generate_hex_elev.setEnabled(bool(dem and tiles))
 
     def _populate_aoi_combo(self):
         """Refresh AOI-aware combos, including segmentation controls."""
