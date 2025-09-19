@@ -113,7 +113,16 @@ This plugin helps you build Flashpoint Campaigns map projects in QGIS with a pre
   * Pick the parent AOI from the dropdown, set **Rows × Columns**, and click **Segment AOI**.
   * Click **Preview Segments** to build a temporary, in-memory layer that visualizes the grid before any shapefiles are written.
   * Segments are saved to `<Project>/Layers/Base/Base_Grid/<AOI>/Segments/Segment_<row>_<col>.shp` and loaded under **Base ▸ Base Grid ▸ <AOI> ▸ Segments**.
-  * Segment layers inherit AOI styling (or fall back to an outline) and appear in AOI selectors across the plugin.
+  * Segment layers inherit AOI styling (or fall back to `styles/aoi_segment.qml`) and appear in AOI selectors across the plugin.
+
+* Use **Map Tile Grid** to align tiles to lat/lon or MGRS boundaries:
+
+  * Choose a preset scale (1:25k, 1:50k, 1:100k, 1:200k, 1:250k) – default 1:250k (~50 km, ~100 hexes).
+  * Select alignment: match AOI extent (legacy), snap to MGRS minute grid, or snap to MGRS degree grid.
+  * Optionally provide north/south and east/west offsets (km or arc-minutes) before generating tiles.
+  * Preview tiles, then generate permanent layers saved under <Project>/Layers/Base/Base_Grid/<AOI>/Segments/<Scale>/Tile_<row>_<col>.shp.
+  * Scale, alignment, and offsets are persisted to hexmosaic.project.json for exports.
+
   * Click **Delete Segments** to remove generated shapefiles and clear stored metadata if you need to re-run the segmentation.
 
 ---
@@ -186,6 +195,7 @@ The Hex Elevation layer converts the pixel-based DEM into a hex-aligned heightma
 5. Review the attributes: `elev_value` (floating point sample), `elev_bucket` (rounded bucket), `dem_source` (raster id), and `bucket_method`.
 
 ### Styling and usage
+- The renderer defaults to `styles/elevation_hex.qml`; copy and edit that file if you need a custom palette.
 - The layer inherits symbology from the DEM via `QgsMapLayerStyle`; if that fails, the fallback `styles/elevation_hex.qml` is applied.
 - Toggle the new layer on/off to compare against the raw DEM.
 - Use this layer when exporting palette-friendly heightmaps or when transferring data to the game editor.

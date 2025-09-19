@@ -20,7 +20,7 @@ try:  # pragma: no cover - depends on PyQt availability during tests
 except ImportError:  # pragma: no cover - depends on environment
     sip = None  # type: ignore[assignment]
 from qgis.core import ( # pyright: ignore[reportMissingImports]
-    QgsVectorLayer, QgsRasterLayer, QgsCoordinateReferenceSystem, QgsField, QgsFeature, QgsGeometry, QgsPointXY, QgsProject,
+    QgsVectorLayer, QgsRasterLayer, QgsCoordinateReferenceSystem, QgsField, QgsFeature, QgsGeometry, QgsPointXY, QgsProject, QgsDistanceArea,
     QgsVectorFileWriter, QgsSnappingConfig, QgsTolerance,
     QgsFillSymbol, QgsMarkerSymbol, QgsSingleSymbolRenderer,
     QgsFields, QgsWkbTypes, QgsLineSymbol, QgsMapLayerStyle,
@@ -235,12 +235,18 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         f2.addRow("Points of interest:", row_poi_combo)
         f2.addRow("", row_poi_actions)
 
-        # AOI segmentation controls
+                # AOI segmentation controls
         self.cboAOI_segment = QtWidgets.QComboBox()
         btn_refresh_aoi_segment = QtWidgets.QPushButton("Refresh")
         row_aoi_segment = QtWidgets.QHBoxLayout()
         row_aoi_segment.addWidget(self.cboAOI_segment)
         row_aoi_segment.addWidget(btn_refresh_aoi_segment)
+
+        self.seg_mode_tabs = QtWidgets.QTabWidget()
+
+        # Equal grid tab
+        tab_equal = QtWidgets.QWidget()
+        equal_form = QtWidgets.QFormLayout(tab_equal)
 
         self.seg_rows_spin = QtWidgets.QSpinBox()
         self.seg_rows_spin.setRange(1, 25)
@@ -255,6 +261,54 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         row_seg_dims.addWidget(QtWidgets.QLabel("Columns:"))
         row_seg_dims.addWidget(self.seg_cols_spin)
         row_seg_dims.addStretch(1)
+        equal_form.addRow("Rows x Columns:", row_seg_dims)
+        self.seg_mode_tabs.addTab(tab_equal, "Equal Grid")
+
+        # Map tile grid tab
+        tab_tile = QtWidgets.QWidget()
+        tile_form = QtWidgets.QFormLayout(tab_tile)
+
+        self.tile_scale_combo = QtWidgets.QComboBox()
+        for label, key, width_km in self._map_tile_scale_presets():
+            self.tile_scale_combo.addItem(label, key)
+        idx_default_scale = self.tile_scale_combo.findData('1:250k')
+        if idx_default_scale >= 0:
+            self.tile_scale_combo.setCurrentIndex(idx_default_scale)
+        tile_form.addRow("Tile scale:", self.tile_scale_combo)
+
+        self.tile_alignment_combo = QtWidgets.QComboBox()
+        self.tile_alignment_combo.addItem("Match AOI extent (legacy)", "extent")
+        self.tile_alignment_combo.addItem("Snap to MGRS minute grid (15')", "minute")
+        self.tile_alignment_combo.addItem("Snap to MGRS degree grid (1°)", "degree")
+        self.tile_alignment_combo.setCurrentIndex(1)
+        tile_form.addRow("Alignment:", self.tile_alignment_combo)
+
+        offset_widget = QtWidgets.QWidget()
+        offset_grid = QtWidgets.QGridLayout(offset_widget)
+        self.tile_offset_ns_spin = QtWidgets.QDoubleSpinBox()
+        self.tile_offset_ns_spin.setRange(-500.0, 500.0)
+        self.tile_offset_ns_spin.setDecimals(3)
+        self.tile_offset_ns_spin.setSingleStep(0.1)
+        self.tile_offset_ew_spin = QtWidgets.QDoubleSpinBox()
+        self.tile_offset_ew_spin.setRange(-500.0, 500.0)
+        self.tile_offset_ew_spin.setDecimals(3)
+        self.tile_offset_ew_spin.setSingleStep(0.1)
+        self.tile_offset_unit_combo = QtWidgets.QComboBox()
+        self.tile_offset_unit_combo.addItem("Kilometres", "km")
+        self.tile_offset_unit_combo.addItem("Arc-minutes", "arcmin")
+        offset_grid.addWidget(QtWidgets.QLabel("North/South offset:"), 0, 0)
+        offset_grid.addWidget(self.tile_offset_ns_spin, 0, 1)
+        offset_grid.addWidget(QtWidgets.QLabel("East/West offset:"), 1, 0)
+        offset_grid.addWidget(self.tile_offset_ew_spin, 1, 1)
+        offset_grid.addWidget(QtWidgets.QLabel("Units:"), 0, 2)
+        offset_grid.addWidget(self.tile_offset_unit_combo, 0, 3, 2, 1)
+        tile_form.addRow("Offsets:", offset_widget)
+
+        self.tile_offset_note = QtWidgets.QLabel("Offsets adjust tile origin relative to grid lines; positive values shift north/east.")
+        self.tile_offset_note.setWordWrap(True)
+        tile_form.addRow("", self.tile_offset_note)
+
+        self.seg_mode_tabs.addTab(tab_tile, "Map Tile Grid")
 
         self.btn_preview_segments = QtWidgets.QPushButton("Preview Segments")
         self.btn_segment_aoi = QtWidgets.QPushButton("Segment AOI")
@@ -269,7 +323,7 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         row_seg_actions.addStretch(1)
 
         f2.addRow("AOI to segment:", row_aoi_segment)
-        f2.addRow("Rows × Columns:", row_seg_dims)
+        f2.addRow("Segmentation mode:", self.seg_mode_tabs)
         f2.addRow("", row_seg_actions)
 
         self.chk_experimental_aoi = QtWidgets.QCheckBox("Allow experimental AOI sizes")
@@ -292,10 +346,14 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         self.cbo_poi_layer.currentIndexChanged.connect(self._update_poi_controls)
         self.btn_create_poi_aois.clicked.connect(self.create_aois_from_poi)
         btn_refresh_aoi_segment.clicked.connect(self._populate_aoi_combo)
+        self.seg_mode_tabs.currentChanged.connect(self._update_segment_buttons_state)
+        self.tile_alignment_combo.currentIndexChanged.connect(self._update_map_tile_controls_state)
+        self.tile_offset_unit_combo.currentIndexChanged.connect(self._update_map_tile_controls_state)
         self.btn_preview_segments.clicked.connect(self.preview_segments_for_selected_aoi)
         self.btn_segment_aoi.clicked.connect(self.segment_selected_aoi)
         self.btn_clear_segments.clicked.connect(self.clear_segments_for_selected_aoi)
         self.cboAOI_segment.currentIndexChanged.connect(self._update_segment_buttons_state)
+        self._update_map_tile_controls_state()
 
         for w in (self.hex_scale_edit, self.width_input, self.height_input):
             w.textChanged.connect(self._recalc_aoi_info)
@@ -577,6 +635,14 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
             "segmentation": {
                 "rows": int(self.seg_rows_spin.value()) if hasattr(self, "seg_rows_spin") else 1,
                 "cols": int(self.seg_cols_spin.value()) if hasattr(self, "seg_cols_spin") else 1,
+                "mode": int(self.seg_mode_tabs.currentIndex()) if hasattr(self, "seg_mode_tabs") else 0,
+                "map_tile": {
+                    "scale": self.tile_scale_combo.currentData() if hasattr(self, "tile_scale_combo") else "1:250k",
+                    "alignment": self.tile_alignment_combo.currentData() if hasattr(self, "tile_alignment_combo") else "extent",
+                    "offset_ns": float(self.tile_offset_ns_spin.value()) if hasattr(self, "tile_offset_ns_spin") else 0.0,
+                    "offset_ew": float(self.tile_offset_ew_spin.value()) if hasattr(self, "tile_offset_ew_spin") else 0.0,
+                    "offset_unit": self.tile_offset_unit_combo.currentData() if hasattr(self, "tile_offset_unit_combo") else "km",
+                },
                 "metadata": self._segment_metadata,
             },
             "hex_elevation": {
@@ -620,6 +686,53 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
                 cols_val = self.seg_cols_spin.value()
             self.seg_cols_spin.setValue(max(self.seg_cols_spin.minimum(), min(self.seg_cols_spin.maximum(), cols_val)))
 
+        if hasattr(self, "seg_mode_tabs"):
+            mode_val = seg_data.get("mode") if isinstance(seg_data, dict) else None
+            try:
+                mode_idx = int(mode_val) if mode_val is not None else 0
+            except (TypeError, ValueError):
+                mode_idx = 0
+            if 0 <= mode_idx < self.seg_mode_tabs.count():
+                self.seg_mode_tabs.setCurrentIndex(mode_idx)
+
+        map_tile_data = seg_data.get("map_tile", {}) if isinstance(seg_data, dict) else {}
+        if hasattr(self, "tile_scale_combo") and isinstance(map_tile_data, dict):
+            scale_val = map_tile_data.get("scale")
+            if scale_val is not None:
+                idx = self.tile_scale_combo.findData(scale_val)
+                if idx < 0:
+                    idx = self.tile_scale_combo.findText(str(scale_val))
+                if idx >= 0:
+                    self.tile_scale_combo.setCurrentIndex(idx)
+        if hasattr(self, "tile_alignment_combo") and isinstance(map_tile_data, dict):
+            alignment_val = map_tile_data.get("alignment")
+            if alignment_val is not None:
+                idx = self.tile_alignment_combo.findData(alignment_val)
+                if idx < 0:
+                    idx = self.tile_alignment_combo.findText(str(alignment_val))
+                if idx >= 0:
+                    self.tile_alignment_combo.setCurrentIndex(idx)
+        if hasattr(self, "tile_offset_unit_combo") and isinstance(map_tile_data, dict):
+            unit_val = map_tile_data.get("offset_unit")
+            if unit_val is not None:
+                idx = self.tile_offset_unit_combo.findData(unit_val)
+                if idx < 0:
+                    idx = self.tile_offset_unit_combo.findText(str(unit_val))
+                if idx >= 0:
+                    self.tile_offset_unit_combo.setCurrentIndex(idx)
+        if hasattr(self, "tile_offset_ns_spin") and isinstance(map_tile_data, dict):
+            try:
+                self.tile_offset_ns_spin.setValue(float(map_tile_data.get("offset_ns", 0.0)))
+            except (TypeError, ValueError):
+                pass
+        if hasattr(self, "tile_offset_ew_spin") and isinstance(map_tile_data, dict):
+            try:
+                self.tile_offset_ew_spin.setValue(float(map_tile_data.get("offset_ew", 0.0)))
+            except (TypeError, ValueError):
+                pass
+        if hasattr(self, "tile_alignment_combo"):
+            self._update_map_tile_controls_state()
+
         metadata = {}
         if isinstance(seg_data, dict):
             raw_meta = seg_data.get("metadata", {})
@@ -643,6 +756,9 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
                         "cols": col_int,
                         "segments": [str(s) for s in entry.get("segments", []) if s is not None],
                     }
+                    for extra_key in ("mode", "scale", "scale_label", "alignment", "offsets", "origin", "tile_width_km", "tile_height_km", "grid", "subdir"):
+                        if extra_key in entry:
+                            meta_entry[extra_key] = entry[extra_key]
                     metadata[str(key)] = meta_entry
         self._segment_metadata = metadata
         self._update_segment_buttons_state()
@@ -1725,15 +1841,377 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
                     continue
         return sorted(layers, key=lambda L: L.name().lower())
 
+    def _map_tile_scale_presets(self):
+        """Return available map tile scale presets as (label, key, width_km)."""
+        return [
+            ("1:25k (~5 km tile)", "1:25k", 5.0),
+            ("1:50k (~10 km tile)", "1:50k", 10.0),
+            ("1:100k (~20 km tile)", "1:100k", 20.0),
+            ("1:200k (~40 km tile)", "1:200k", 40.0),
+            ("1:250k (~50 km tile)", "1:250k", 50.0),
+        ]
+
+    def _map_tile_scale_lookup(self):
+        if not hasattr(self, "_tile_scale_lookup"):
+            lookup = {}
+            for label, key, width_km in self._map_tile_scale_presets():
+                lookup[key] = {"label": label, "width_km": width_km}
+            self._tile_scale_lookup = lookup
+        return self._tile_scale_lookup
+
+    def _segment_mode(self):
+        if hasattr(self, "seg_mode_tabs") and self.seg_mode_tabs.currentIndex() == 1:
+            return "map_tile"
+        return "equal"
+
+    def _current_map_tile_settings(self):
+        scale_key = None
+        scale_label = ""
+        width_km = 50.0
+        if hasattr(self, "tile_scale_combo"):
+            scale_key = self.tile_scale_combo.currentData()
+            if scale_key is None:
+                scale_key = self.tile_scale_combo.currentText()
+        lookup = self._map_tile_scale_lookup()
+        preset = lookup.get(scale_key) if scale_key else None
+        if not preset:
+            scale_key = "1:250k"
+            preset = lookup.get(scale_key, {"label": "1:250k (~50 km tile)", "width_km": 50.0})
+        scale_label = preset.get("label", "1:250k (~50 km tile)")
+        width_km = float(preset.get("width_km", 50.0))
+
+        alignment = "extent"
+        if hasattr(self, "tile_alignment_combo"):
+            alignment_data = self.tile_alignment_combo.currentData()
+            if alignment_data:
+                alignment = alignment_data
+
+        offsets = {"ns": 0.0, "ew": 0.0, "unit": "km"}
+        if hasattr(self, "tile_offset_ns_spin"):
+            offsets["ns"] = float(self.tile_offset_ns_spin.value())
+        if hasattr(self, "tile_offset_ew_spin"):
+            offsets["ew"] = float(self.tile_offset_ew_spin.value())
+        if hasattr(self, "tile_offset_unit_combo"):
+            unit_data = self.tile_offset_unit_combo.currentData()
+            if unit_data:
+                offsets["unit"] = unit_data
+
+        return {
+            "scale_key": scale_key,
+            "scale_label": scale_label,
+            "width_km": width_km,
+            "alignment": alignment,
+            "offsets": offsets,
+        }
+
+    def _update_map_tile_controls_state(self):
+        if not hasattr(self, "tile_alignment_combo"):
+            return
+        alignment = self.tile_alignment_combo.currentData()
+        enable_offsets = alignment not in (None, "extent")
+        for widget in (getattr(self, "tile_offset_ns_spin", None), getattr(self, "tile_offset_ew_spin", None), getattr(self, "tile_offset_unit_combo", None)):
+            if widget is not None:
+                widget.setEnabled(enable_offsets)
+        suffix = ""
+        if enable_offsets and hasattr(self, "tile_offset_unit_combo"):
+            unit = self.tile_offset_unit_combo.currentData()
+            suffix = " km" if unit == "km" else " arc-min"
+        if hasattr(self, "tile_offset_ns_spin"):
+            self.tile_offset_ns_spin.setSuffix(suffix)
+        if hasattr(self, "tile_offset_ew_spin"):
+            self.tile_offset_ew_spin.setSuffix(suffix)
+
+    def _convert_meters_to_map_units(self, value_meters, map_units):
+        if map_units == QgsUnitTypes.DistanceMeters:
+            return value_meters
+        factor = QgsUnitTypes.fromUnitToUnitFactor(QgsUnitTypes.DistanceMeters, map_units)
+        return value_meters * factor
+
+    def _convert_map_units_to_meters(self, value_units, map_units):
+        if map_units == QgsUnitTypes.DistanceMeters:
+            return value_units
+        factor = QgsUnitTypes.fromUnitToUnitFactor(map_units, QgsUnitTypes.DistanceMeters)
+        return value_units * factor
+
+    def _round_up_to_increment(self, value, increment):
+        if increment <= 0:
+            return value
+        units = max(1, math.ceil(value / increment - 1e-9))
+        return units * increment
+
+    def _map_tile_offsets_in_degrees(self, offsets, meters_per_deg_lat, meters_per_deg_lon):
+        ns = float(offsets.get("ns", 0.0))
+        ew = float(offsets.get("ew", 0.0))
+        unit = offsets.get("unit", "km")
+        if unit == "arcmin":
+            return ns / 60.0, ew / 60.0
+        # default kilometres
+        lat_deg = (ns * 1000.0) / meters_per_deg_lat if meters_per_deg_lat else 0.0
+        lon_deg = (ew * 1000.0) / meters_per_deg_lon if meters_per_deg_lon else 0.0
+        return lat_deg, lon_deg
+
+    def _prepare_map_tile_cells(self, parent_layer, hex_m):
+        geoms = [feat.geometry() for feat in parent_layer.getFeatures()]
+        if not geoms:
+            return None, "Selected AOI has no geometry to segment."
+
+        aoi_geom = QgsGeometry.unaryUnion(geoms)
+        if aoi_geom.isEmpty():
+            return None, "AOI geometry is empty; segmentation skipped."
+
+        settings = self._current_map_tile_settings()
+        width_km = max(0.001, settings.get("width_km", 50.0))
+        tile_width_m = width_km * 1000.0
+        alignment = settings.get("alignment", "extent")
+        offsets = settings.get("offsets", {"ns": 0.0, "ew": 0.0, "unit": "km"})
+
+        if alignment == "extent":
+            result, err = self._prepare_map_tile_cells_extent(parent_layer, aoi_geom, tile_width_m, settings.get("scale_key"))
+        else:
+            result, err = self._prepare_map_tile_cells_geographic(parent_layer, aoi_geom, tile_width_m, alignment, offsets, settings.get("scale_key"))
+        if err:
+            return None, err
+
+        if result is None:
+            return None, "No segments were generated."
+
+        result.setdefault("tile_width_km", width_km)
+        result.setdefault("tile_height_km", width_km)
+        result["scale_key"] = settings.get("scale_key")
+        result["scale_label"] = settings.get("scale_label")
+        result["alignment"] = alignment
+        result["offsets"] = offsets
+        subdir_default = f"MapTiles_{self._safe_filename(settings.get('scale_key', 'scale'))}_{alignment}"
+        result.setdefault("subdir", subdir_default)
+        return result, None
+
+    def _prepare_map_tile_cells_extent(self, parent_layer, aoi_geom, tile_width_m, scale_key):
+        map_units = parent_layer.crs().mapUnits()
+        tile_width_units = self._convert_meters_to_map_units(tile_width_m, map_units)
+        if tile_width_units <= 0:
+            return None, "Tile width is too small."
+
+        extent = aoi_geom.boundingBox()
+        xmin, xmax = extent.xMinimum(), extent.xMaximum()
+        ymin, ymax = extent.yMinimum(), extent.yMaximum()
+
+        grid_min_x = math.floor(xmin / tile_width_units) * tile_width_units
+        grid_max_x = math.ceil(xmax / tile_width_units) * tile_width_units
+        grid_min_y = math.floor(ymin / tile_width_units) * tile_width_units
+        grid_max_y = math.ceil(ymax / tile_width_units) * tile_width_units
+
+        cols = max(1, int(math.ceil((grid_max_x - grid_min_x) / tile_width_units)))
+        rows = max(1, int(math.ceil((grid_max_y - grid_min_y) / tile_width_units)))
+
+        x_edges = [grid_min_x + i * tile_width_units for i in range(cols + 1)]
+        y_edges = [grid_min_y + j * tile_width_units for j in range(rows + 1)]
+
+        cells = self._build_cells_from_edges(aoi_geom, x_edges, y_edges)
+        if not cells:
+            return None, "No intersection between AOI and computed tile grid."
+
+        origin_geo = None
+        try:
+            transform = QgsCoordinateTransform(parent_layer.crs(), QgsCoordinateReferenceSystem("EPSG:4326"), QgsProject.instance())
+            origin_point = transform.transform(QgsPointXY(grid_min_x, grid_min_y))
+            origin_geo = {"lon": origin_point.x(), "lat": origin_point.y()}
+        except Exception:
+            origin_geo = None
+
+        result = {
+            "cells": cells,
+            "rows": rows,
+            "cols": cols,
+            "tile_width_units": tile_width_units,
+            "tile_width_km": self._convert_map_units_to_meters(tile_width_units, map_units) / 1000.0,
+            "tile_height_km": self._convert_map_units_to_meters(tile_width_units, map_units) / 1000.0,
+            "origin": {
+                "project": {"x": grid_min_x, "y": grid_min_y},
+                "geographic": origin_geo,
+            },
+        }
+        return result, None
+
+    def _prepare_map_tile_cells_geographic(self, parent_layer, aoi_geom, tile_width_m, alignment, offsets, scale_key):
+        project = QgsProject.instance()
+        crs_src = parent_layer.crs()
+        crs_geo = QgsCoordinateReferenceSystem("EPSG:4326")
+        transform_to_geo = QgsCoordinateTransform(crs_src, crs_geo, project)
+        transform_from_geo = QgsCoordinateTransform(crs_geo, crs_src, project)
+
+        bbox = transform_to_geo.transformBoundingBox(aoi_geom.boundingBox())
+        lon_min, lon_max = bbox.xMinimum(), bbox.xMaximum()
+        lat_min, lat_max = bbox.yMinimum(), bbox.yMaximum()
+        lon_center = (lon_min + lon_max) / 2.0
+        lat_center = (lat_min + lat_max) / 2.0
+
+        distance = QgsDistanceArea()
+        try:
+            distance.setSourceCrs(crs_geo, project.transformContext())
+        except Exception:
+            pass
+        ellipsoid = project.ellipsoid()
+        if not ellipsoid:
+            ellipsoid = 'WGS84'
+        try:
+            distance.setEllipsoid(ellipsoid)
+        except Exception:
+            try:
+                distance.setEllipsoid('WGS84')
+            except Exception:
+                pass
+        if hasattr(distance, 'setEllipsoidalMode'):
+            try:
+                distance.setEllipsoidalMode(True)
+            except Exception:
+                pass
+
+        try:
+            meters_per_deg_lat = distance.measureLine(QgsPointXY(lon_center, lat_center), QgsPointXY(lon_center, lat_center + 1))
+        except Exception:
+            meters_per_deg_lat = 111320.0
+        if not meters_per_deg_lat or math.isnan(meters_per_deg_lat):
+            meters_per_deg_lat = 111320.0
+
+        try:
+            meters_per_deg_lon = distance.measureLine(QgsPointXY(lon_center, lat_center), QgsPointXY(lon_center + 1, lat_center))
+        except Exception:
+            meters_per_deg_lon = 111320.0 * max(0.1, math.cos(math.radians(lat_center)))
+        if not meters_per_deg_lon or math.isnan(meters_per_deg_lon):
+            meters_per_deg_lon = 111320.0 * max(0.1, math.cos(math.radians(lat_center)))
+
+        increment_deg = 0.25 if alignment == "minute" else 1.0
+        tile_lon_deg = self._round_up_to_increment(tile_width_m / meters_per_deg_lon, increment_deg)
+        tile_lat_deg = self._round_up_to_increment(tile_width_m / meters_per_deg_lat, increment_deg)
+
+        offset_lat_deg, offset_lon_deg = self._map_tile_offsets_in_degrees(offsets, meters_per_deg_lat, meters_per_deg_lon)
+
+        grid_min_lon = math.floor((lon_min - offset_lon_deg) / tile_lon_deg) * tile_lon_deg + offset_lon_deg
+        grid_max_lon = math.ceil((lon_max - offset_lon_deg) / tile_lon_deg) * tile_lon_deg + offset_lon_deg
+        grid_min_lat = math.floor((lat_min - offset_lat_deg) / tile_lat_deg) * tile_lat_deg + offset_lat_deg
+        grid_max_lat = math.ceil((lat_max - offset_lat_deg) / tile_lat_deg) * tile_lat_deg + offset_lat_deg
+
+        cols = max(1, int(math.ceil((grid_max_lon - grid_min_lon) / tile_lon_deg - 1e-9)))
+        rows = max(1, int(math.ceil((grid_max_lat - grid_min_lat) / tile_lat_deg - 1e-9)))
+
+        lon_edges = [grid_min_lon + i * tile_lon_deg for i in range(cols + 1)]
+        lat_edges = [grid_min_lat + j * tile_lat_deg for j in range(rows + 1)]
+
+        cells = []
+        feature_id = 1
+        for row_index in range(rows):
+            row_num = row_index + 1
+            lat_bottom = lat_edges[rows - (row_index + 1)]
+            lat_top = lat_edges[rows - row_index]
+            for col_index in range(cols):
+                col_num = col_index + 1
+                lon_left = lon_edges[col_index]
+                lon_right = lon_edges[col_index + 1]
+                try:
+                    ll = transform_from_geo.transform(QgsPointXY(lon_left, lat_bottom))
+                    ul = transform_from_geo.transform(QgsPointXY(lon_left, lat_top))
+                    ur = transform_from_geo.transform(QgsPointXY(lon_right, lat_top))
+                    lr = transform_from_geo.transform(QgsPointXY(lon_right, lat_bottom))
+                except Exception as exc:
+                    return None, f"Coordinate transform failed: {exc}"
+
+                rect_geom = QgsGeometry.fromPolygonXY([[ll, ul, ur, lr]])
+                seg_geom = aoi_geom.intersection(rect_geom)
+                if seg_geom.isEmpty():
+                    continue
+                seg_geom = seg_geom.makeValid()
+                if seg_geom.isEmpty():
+                    continue
+                seg_geom.convertToMultiType()
+                cells.append({
+                    "id": feature_id,
+                    "row": row_num,
+                    "col": col_num,
+                    "geometry": seg_geom,
+                })
+                feature_id += 1
+
+        if not cells:
+            return None, "No intersection between AOI and snapped map tiles."
+
+        origin_project = None
+        try:
+            origin_project = transform_from_geo.transform(QgsPointXY(grid_min_lon, grid_min_lat))
+        except Exception:
+            origin_project = None
+
+        result = {
+            "cells": cells,
+            "rows": rows,
+            "cols": cols,
+            "tile_width_km": tile_lon_deg * meters_per_deg_lon / 1000.0,
+            "tile_height_km": tile_lat_deg * meters_per_deg_lat / 1000.0,
+            "origin": {
+                "project": {"x": origin_project.x(), "y": origin_project.y()} if origin_project else None,
+                "geographic": {"lon": grid_min_lon, "lat": grid_min_lat},
+            },
+            "grid": {
+                "tile_lon_deg": tile_lon_deg,
+                "tile_lat_deg": tile_lat_deg,
+                "meters_per_deg_lon": meters_per_deg_lon,
+                "meters_per_deg_lat": meters_per_deg_lat,
+            },
+        }
+        return result, None
+
+    def _build_cells_from_edges(self, aoi_geom, x_edges, y_edges):
+        cells = []
+        rows = max(0, len(y_edges) - 1)
+        cols = max(0, len(x_edges) - 1)
+        feature_id = 1
+        for row_index in range(rows):
+            row_num = row_index + 1
+            ymin_seg = y_edges[rows - (row_index + 1)]
+            ymax_seg = y_edges[rows - row_index]
+            for col_index in range(cols):
+                col_num = col_index + 1
+                xmin_seg = x_edges[col_index]
+                xmax_seg = x_edges[col_index + 1]
+                rect_geom = QgsGeometry.fromPolygonXY([[
+                    QgsPointXY(xmin_seg, ymin_seg),
+                    QgsPointXY(xmin_seg, ymax_seg),
+                    QgsPointXY(xmax_seg, ymax_seg),
+                    QgsPointXY(xmax_seg, ymin_seg)
+                ]])
+                seg_geom = aoi_geom.intersection(rect_geom)
+                if seg_geom.isEmpty():
+                    continue
+                seg_geom = seg_geom.makeValid()
+                if seg_geom.isEmpty():
+                    continue
+                seg_geom.convertToMultiType()
+                cells.append({
+                    "id": feature_id,
+                    "row": row_num,
+                    "col": col_num,
+                    "geometry": seg_geom,
+                })
+                feature_id += 1
+        return cells
     def _widget_is_alive(self, widget):
-        if widget is None:
+        try:
+            if widget is None:
+                return False
+        except RuntimeError:
             return False
+
         if sip is not None:
             try:
                 if sip.isdeleted(widget):
                     return False
             except Exception:
                 return False
+        else:
+            try:
+                widget.parent()
+            except RuntimeError:
+                return False
+
         return True
 
     def _populate_hex_elevation_inputs(self):
@@ -1743,63 +2221,67 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
         if not self._widget_is_alive(dem_combo) or not self._widget_is_alive(hex_combo):
             return
 
-        rasters = self._gather_raster_layers()
-        prev_dem_id = dem_combo.currentData() if dem_combo.count() else ""
-        prev_dem_text = dem_combo.currentText() if dem_combo.count() else ""
+        try:
+            rasters = self._gather_raster_layers()
+            prev_dem_id = dem_combo.currentData() if dem_combo.count() else ""
+            prev_dem_text = dem_combo.currentText() if dem_combo.count() else ""
 
-        dem_combo.blockSignals(True)
-        dem_combo.clear()
-        for lyr in rasters:
-            dem_combo.addItem(lyr.name(), lyr.id())
+            dem_combo.blockSignals(True)
+            dem_combo.clear()
+            for lyr in rasters:
+                dem_combo.addItem(lyr.name(), lyr.id())
 
-        matched_dem = False
-        if prev_dem_id:
-            idx = dem_combo.findData(prev_dem_id)
-            if idx >= 0:
-                dem_combo.setCurrentIndex(idx)
-                matched_dem = True
-        if not matched_dem and self._pending_hex_dem_layer_name:
-            idx = dem_combo.findText(self._pending_hex_dem_layer_name, Qt.MatchFixedString)
-            if idx >= 0:
-                dem_combo.setCurrentIndex(idx)
-                matched_dem = True
-        if not matched_dem and prev_dem_text:
-            idx = dem_combo.findText(prev_dem_text, Qt.MatchFixedString)
-            if idx >= 0:
-                dem_combo.setCurrentIndex(idx)
-                matched_dem = True
-        if matched_dem:
-            self._pending_hex_dem_layer_name = ""
-        dem_combo.blockSignals(False)
+            matched_dem = False
+            if prev_dem_id:
+                idx = dem_combo.findData(prev_dem_id)
+                if idx >= 0:
+                    dem_combo.setCurrentIndex(idx)
+                    matched_dem = True
+            if not matched_dem and self._pending_hex_dem_layer_name:
+                idx = dem_combo.findText(self._pending_hex_dem_layer_name, Qt.MatchFixedString)
+                if idx >= 0:
+                    dem_combo.setCurrentIndex(idx)
+                    matched_dem = True
+            if not matched_dem and prev_dem_text:
+                idx = dem_combo.findText(prev_dem_text, Qt.MatchFixedString)
+                if idx >= 0:
+                    dem_combo.setCurrentIndex(idx)
+                    matched_dem = True
+            if matched_dem:
+                self._pending_hex_dem_layer_name = ""
+            dem_combo.blockSignals(False)
 
-        hex_layers = self._gather_hex_layers()
-        prev_hex_id = hex_combo.currentData() if hex_combo.count() else ""
-        prev_hex_text = hex_combo.currentText() if hex_combo.count() else ""
+            hex_layers = self._gather_hex_layers()
+            prev_hex_id = hex_combo.currentData() if hex_combo.count() else ""
+            prev_hex_text = hex_combo.currentText() if hex_combo.count() else ""
 
-        hex_combo.blockSignals(True)
-        hex_combo.clear()
-        for lyr in hex_layers:
-            hex_combo.addItem(lyr.name(), lyr.id())
+            hex_combo.blockSignals(True)
+            hex_combo.clear()
+            for lyr in hex_layers:
+                hex_combo.addItem(lyr.name(), lyr.id())
 
-        matched_hex = False
-        if prev_hex_id:
-            idx = hex_combo.findData(prev_hex_id)
-            if idx >= 0:
-                hex_combo.setCurrentIndex(idx)
-                matched_hex = True
-        if not matched_hex and self._pending_hex_tile_layer_name:
-            idx = hex_combo.findText(self._pending_hex_tile_layer_name, Qt.MatchFixedString)
-            if idx >= 0:
-                hex_combo.setCurrentIndex(idx)
-                matched_hex = True
-        if not matched_hex and prev_hex_text:
-            idx = hex_combo.findText(prev_hex_text, Qt.MatchFixedString)
-            if idx >= 0:
-                hex_combo.setCurrentIndex(idx)
-                matched_hex = True
-        if matched_hex:
-            self._pending_hex_tile_layer_name = ""
-        hex_combo.blockSignals(False)
+            matched_hex = False
+            if prev_hex_id:
+                idx = hex_combo.findData(prev_hex_id)
+                if idx >= 0:
+                    hex_combo.setCurrentIndex(idx)
+                    matched_hex = True
+            if not matched_hex and self._pending_hex_tile_layer_name:
+                idx = hex_combo.findText(self._pending_hex_tile_layer_name, Qt.MatchFixedString)
+                if idx >= 0:
+                    hex_combo.setCurrentIndex(idx)
+                    matched_hex = True
+            if not matched_hex and prev_hex_text:
+                idx = hex_combo.findText(prev_hex_text, Qt.MatchFixedString)
+                if idx >= 0:
+                    hex_combo.setCurrentIndex(idx)
+                    matched_hex = True
+            if matched_hex:
+                self._pending_hex_tile_layer_name = ""
+            hex_combo.blockSignals(False)
+
+        except RuntimeError:
+            return
 
         self._update_hex_elevation_button_state()
 
@@ -1919,8 +2401,8 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
             return True
         seg_dir = self._segment_directory_for_layer(layer)
         if os.path.isdir(seg_dir):
-            for name in os.listdir(seg_dir):
-                if name.lower().endswith(".shp"):
+            for _, _, files in os.walk(seg_dir):
+                if any(name.lower().endswith('.shp') for name in files):
                     return True
         return False
 
@@ -1988,16 +2470,19 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
             self.log("Select an AOI to preview segments.")
             return
 
-        rows = max(1, int(self.seg_rows_spin.value())) if hasattr(self, "seg_rows_spin") else 1
-        cols = max(1, int(self.seg_cols_spin.value())) if hasattr(self, "seg_cols_spin") else 1
-
+        mode = self._segment_mode()
         try:
             hex_m = max(1.0, float(self.hex_scale_edit.text()))
         except Exception:
             hex_m = 500.0
             self.hex_scale_edit.setText("500")
 
-        result, err = self._prepare_segment_cells(parent_layer, rows, cols, hex_m)
+        if mode == "map_tile":
+            result, err = self._prepare_map_tile_cells(parent_layer, hex_m)
+        else:
+            rows = max(1, int(self.seg_rows_spin.value())) if hasattr(self, "seg_rows_spin") else 1
+            cols = max(1, int(self.seg_cols_spin.value())) if hasattr(self, "seg_cols_spin") else 1
+            result, err = self._prepare_segment_cells(parent_layer, rows, cols, hex_m)
         if err:
             self.log(err)
             return
@@ -2047,7 +2532,8 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
 
         key = self._metadata_key_for_layer(parent_layer)
         self._segment_preview_layers[key] = mem_layer.id()
-        self.log(f"Previewed {len(features)} segments for {parent_layer.name()}.")
+        label = "map tiles" if self._segment_mode() == "map_tile" else "segments"
+        self.log(f"Previewed {len(features)} {label} for {parent_layer.name()}.")
 
     def _prepare_segment_cells(self, parent_layer, rows, cols, hex_m):
         geoms = [feat.geometry() for feat in parent_layer.getFeatures()]
@@ -2133,74 +2619,113 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
     def segment_selected_aoi(self):
         parent_layer = self._selected_aoi_layer_for_segmentation()
         if not parent_layer:
-            self.log("Select an AOI to segment.")
+            self.log('Select an AOI to segment.')
             return
 
-        rows = max(1, int(self.seg_rows_spin.value())) if hasattr(self, "seg_rows_spin") else 1
-        cols = max(1, int(self.seg_cols_spin.value())) if hasattr(self, "seg_cols_spin") else 1
-
+        mode = self._segment_mode()
         try:
             hex_m = max(1.0, float(self.hex_scale_edit.text()))
         except Exception:
             hex_m = 500.0
-            self.hex_scale_edit.setText("500")
+            self.hex_scale_edit.setText('500')
 
-        seg_dir = self._segment_directory_for_layer(parent_layer)
-        os.makedirs(seg_dir, exist_ok=True)
+        base_seg_dir = self._segment_directory_for_layer(parent_layer)
+        os.makedirs(base_seg_dir, exist_ok=True)
 
-        result, err = self._prepare_segment_cells(parent_layer, rows, cols, hex_m)
+        if mode == 'map_tile':
+            result, err = self._prepare_map_tile_cells(parent_layer, hex_m)
+        else:
+            rows = max(1, int(self.seg_rows_spin.value())) if hasattr(self, 'seg_rows_spin') else 1
+            cols = max(1, int(self.seg_cols_spin.value())) if hasattr(self, 'seg_cols_spin') else 1
+            result, err = self._prepare_segment_cells(parent_layer, rows, cols, hex_m)
         if err:
             self.log(err)
             return
-        cells = result.get("cells", []) if result else []
+
+        result = result or {}
+        cells = result.get('cells', [])
+        if not cells:
+            self.log('No segments were created for the selected AOI.')
+            return
+
+        if mode == 'map_tile':
+            rows = int(result.get('rows') or 0)
+            cols = int(result.get('cols') or 0)
+            if rows <= 0:
+                rows = len({cell['row'] for cell in cells})
+            if cols <= 0:
+                cols = len({cell['col'] for cell in cells})
+            scale_key = result.get('scale_key') or 'map_tiles'
+            alignment = result.get('alignment') or 'extent'
+            subdir_name = result.get('subdir') or f"MapTiles_{self._safe_filename(scale_key)}_{alignment}"
+            seg_dir = os.path.join(base_seg_dir, subdir_name)
+        else:
+            rows = max(1, int(self.seg_rows_spin.value())) if hasattr(self, 'seg_rows_spin') else 1
+            cols = max(1, int(self.seg_cols_spin.value())) if hasattr(self, 'seg_cols_spin') else 1
+            alignment = 'equal'
+            subdir_name = ''
+            seg_dir = base_seg_dir
 
         self._remove_segment_preview(parent_layer)
-        self._remove_segment_layers(parent_layer)
+        self._remove_segment_layers(parent_layer, seg_dir)
         shutil.rmtree(seg_dir, ignore_errors=True)
         os.makedirs(seg_dir, exist_ok=True)
 
         fields = QgsFields()
-        fields.append(QgsField("id", QVariant.Int))
-        fields.append(QgsField("row", QVariant.Int))
-        fields.append(QgsField("col", QVariant.Int))
-        fields.append(QgsField("name", QVariant.String, len=80))
+        fields.append(QgsField('id', QVariant.Int))
+        fields.append(QgsField('row', QVariant.Int))
+        fields.append(QgsField('col', QVariant.Int))
+        fields.append(QgsField('name', QVariant.String, len=80))
+        fields.append(QgsField('scale', QVariant.String, len=32))
+        fields.append(QgsField('align', QVariant.String, len=16))
 
         proj = QgsProject.instance()
         group = self._ensure_segments_group(parent_layer)
         created_layers = []
         segment_names = []
+        scale_key = result.get('scale_key') if mode == 'map_tile' else ''
+        scale_label = result.get('scale_label') if mode == 'map_tile' else ''
+        alignment = result.get('alignment') if mode == 'map_tile' else 'equal'
+
         for cell in cells:
-            seg_geom = cell["geometry"]
-            row_num = cell["row"]
-            col_num = cell["col"]
-            seg_name = f"{parent_layer.name()} – Segment R{row_num}C{col_num}"
-            shp_name = self._safe_filename(f"Segment_{row_num}_{col_num}.shp")
+            seg_geom = cell['geometry']
+            row_num = cell['row']
+            col_num = cell['col']
+            if mode == 'map_tile':
+                scale_safe = self._safe_filename(scale_key or 'map_tiles')
+                seg_name = f"{parent_layer.name()} - Tile {scale_key or scale_label or ''} R{row_num}C{col_num}"
+                shp_name = self._safe_filename(f"Tile_{scale_safe}_R{row_num}_C{col_num}.shp")
+            else:
+                seg_name = f"{parent_layer.name()} - Segment R{row_num}C{col_num}"
+                shp_name = self._safe_filename(f"Segment_{row_num}_{col_num}.shp")
             shp_path = os.path.join(seg_dir, shp_name)
             self._clean_vector_sidecars(shp_path)
 
             writer = QgsVectorFileWriter(
-                shp_path, "UTF-8", fields, QgsWkbTypes.MultiPolygon, parent_layer.crs(), "ESRI Shapefile"
+                shp_path, 'UTF-8', fields, QgsWkbTypes.MultiPolygon, parent_layer.crs(), 'ESRI Shapefile'
             )
             if writer.hasError() != QgsVectorFileWriter.NoError:
                 del writer
-                self.log(f"Failed to write segment shapefile: {shp_path}")
+                self.log(f'Failed to write segment shapefile: {shp_path}')
                 continue
 
             feat = QgsFeature(fields)
-            feat.setAttribute("id", cell["id"])
-            feat.setAttribute("row", row_num)
-            feat.setAttribute("col", col_num)
-            feat.setAttribute("name", seg_name)
+            feat.setAttribute('id', cell['id'])
+            feat.setAttribute('row', row_num)
+            feat.setAttribute('col', col_num)
+            feat.setAttribute('name', seg_name)
+            feat.setAttribute('scale', scale_key if mode == 'map_tile' else '')
+            feat.setAttribute('align', alignment if mode == 'map_tile' else 'equal')
             feat.setGeometry(seg_geom)
             writer.addFeature(feat)
             del writer
 
-            seg_layer = QgsVectorLayer(shp_path, seg_name, "ogr")
+            seg_layer = QgsVectorLayer(shp_path, seg_name, 'ogr')
             if not seg_layer.isValid():
-                self.log(f"Segment shapefile saved but failed to load: {shp_path}")
+                self.log(f'Segment shapefile saved but failed to load: {shp_path}')
                 continue
 
-            styled = self._apply_style(seg_layer, "aoi_segment.qml") or self._apply_style(seg_layer, "aoi.qml")
+            styled = self._apply_style(seg_layer, 'aoi_segment.qml') or self._apply_style(seg_layer, 'aoi.qml')
             if not styled:
                 sym = QgsFillSymbol.createSimple({
                     'color': '255,255,255,0',
@@ -2209,29 +2734,47 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget):
                 })
                 seg_layer.setRenderer(QgsSingleSymbolRenderer(sym))
 
-                proj.addMapLayer(seg_layer, False)
-                group.addLayer(seg_layer)
-                created_layers.append(seg_layer)
-                segment_names.append(seg_layer.name())
+            proj.addMapLayer(seg_layer, False)
+            group.addLayer(seg_layer)
+            created_layers.append(seg_layer)
+            segment_names.append(seg_layer.name())
 
         if not created_layers:
-            self.log("No segments were created; the AOI may be too small for the requested grid.")
+            self.log('No segments were created; the AOI may be too small for the requested grid.')
             shutil.rmtree(seg_dir, ignore_errors=True)
             self._update_segment_buttons_state()
             return
 
         key = self._metadata_key_for_layer(parent_layer)
-        self._segment_metadata[key] = {
-            "parent": parent_layer.name(),
-            "rows": rows,
-            "cols": cols,
-            "segments": segment_names,
+        metadata_entry = {
+            'parent': parent_layer.name(),
+            'rows': rows,
+            'cols': cols,
+            'segments': segment_names,
+            'mode': mode,
+            'alignment': alignment,
         }
+        if mode == 'map_tile':
+            metadata_entry.update({
+                'scale': scale_key,
+                'scale_label': scale_label,
+                'alignment': alignment,
+                'offsets': result.get('offsets'),
+                'origin': result.get('origin'),
+                'tile_width_km': result.get('tile_width_km'),
+                'tile_height_km': result.get('tile_height_km'),
+                'grid': result.get('grid'),
+                'subdir': os.path.relpath(seg_dir, base_seg_dir).replace('\\', '/') if seg_dir != base_seg_dir else '',
+            })
+        self._segment_metadata[key] = metadata_entry
 
         self._save_project_settings()
         self._populate_aoi_combo()
-        self.log(f"Created {len(created_layers)} segments for {parent_layer.name()} in {rows}×{cols} grid.")
-
+        if mode == 'map_tile':
+            label = scale_label or scale_key or 'map tiles'
+            self.log(f"Created {len(created_layers)} map tiles ({label}) for {parent_layer.name()} aligned to {alignment} grid.")
+        else:
+            self.log(f"Created {len(created_layers)} segments for {parent_layer.name()} in {rows}x{cols} grid.")
     def clear_segments_for_selected_aoi(self):
         parent_layer = self._selected_aoi_layer_for_segmentation()
         if not parent_layer:

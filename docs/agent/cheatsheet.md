@@ -34,8 +34,8 @@ Always run commands from the repository root unless noted otherwise.
 
 ## Configuration & Environment
 
-- `metadata.txt` — ensure version, QGIS compatibility, and flags stay current.
-- `pb_tool.cfg` — defines which files ship in deploy/package steps. Update when adding modules.
+- `metadata.txt` ï¿½ ensure version, QGIS compatibility, and flags stay current.
+- `pb_tool.cfg` ï¿½ defines which files ship in deploy/package steps. Update when adding modules.
 - Environment variables commonly needed in automation:
   - `QGIS_PREFIX_PATH` (root of your QGIS install)
   - `PYTHONPATH` (include the project root and QGIS Python site-packages)
@@ -44,6 +44,7 @@ Always run commands from the repository root unless noted otherwise.
 
 ## Quick Workflows
 
+- **Generate map tiles:** use the new Map Tile Grid tab to pick a scale preset (default 1:250k), choose grid alignment, set offsets if needed, preview, then generate shapefiles under `Base/Base_Grid/<AOI>/Segments/<Scale>/`.
 - **Refresh translations:** run `make transup`, review `.ts` diffs, then `make transcompile` to regenerate `.qm` files.
 - **Rebuild help docs:** `make doc` and capture `help/build/html` as artifacts if needed.
 - **Add new profile:** drop a JSON file into `profiles/`, update any selectors in `hexmosaic.py`, and document the change in `docs/howtos/`.
@@ -61,10 +62,10 @@ Always run commands from the repository root unless noted otherwise.
 
 ## Helpful References
 
-- `docs/dev-setup/local.md` — step-by-step workstation bootstrap.
-- `docs/dev-setup/cloud.md` — container/CI guidance.
-- `docs/tests.md` — overview of available test suites and fixtures.
-- `docs/release.md` — full release checklist.
-- `docs/agent/task-recipes.md` — playbooks for multi-step agent tasks.
+- `docs/dev-setup/local.md` ï¿½ step-by-step workstation bootstrap.
+- `docs/dev-setup/cloud.md` ï¿½ container/CI guidance.
+- `docs/tests.md` ï¿½ overview of available test suites and fixtures.
+- `docs/release.md` ï¿½ full release checklist.
+- `docs/agent/task-recipes.md` ï¿½ playbooks for multi-step agent tasks.
 
 Update this cheat sheet whenever new automation scripts or workflows land so agents always have the latest runbook.

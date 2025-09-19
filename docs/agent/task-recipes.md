@@ -113,7 +113,7 @@ Goal: Deliver the first milestone of the Hex Mosaic Palette initiative by creati
 - Artifact downloads succeed for reviewers or deployment jobs.
 
 **Escalation**
-- Secrets cannot be stored due to policy or legal constraints�stop and request guidance.
+- Secrets cannot be stored due to policy or legal constraintsï¿½stop and request guidance.
 - Cache restores become unstable or corrupted; gather logs before purging caches and escalating.
 
 ---
@@ -121,3 +121,53 @@ Goal: Deliver the first milestone of the Hex Mosaic Palette initiative by creati
 ---
 
 Keep this document current after each recipe is executed. Outdated steps slow agents down and create duplicate work.
+
+## AOI Segmentation Feature (Backlog)
+Goal: Extend the Map Area tab so oversized AOIs can be subdivided into game-ready child maps either by equal grid tiling, grid-aligned map tiles, or clustering around points of interest (POIs).
+
+### Context
+- UI lives in hexmosaic_dockwidget.py (pg_aoi section around lines 170-220).
+- AOIs are persisted as shapefiles under <Project>/Layers/Base/ (create_aoi method ~1860ff).
+- README segmentation guidance ("Use Segment AOI" and "Map Tile Grid" bullets) defines UX expectations.
+- Segmentation metadata feeds export workflows (export_png_direct ~line 1600) and should capture tile scale/alignment.
+
+### Recipe 1 - Enable "Experimental AOI Sizes" Toggle
+(unchanged – keep oversized AOIs available for downstream workflows.)
+
+### Recipe 2 - Map Tile Grid Segmentation
+Snap AOIs to MGRS-style grids using preset scales and optional offsets.
+
+**Prep**
+- Determine target scale preset (1:25k, 1:50k, 1:100k, 1:200k, 1:250k) and default (~1:250k).
+- Decide alignment mode: legacy AOI extent, MGRS minute grid (15'), or MGRS degree grid (1°).
+- Identify offset requirements (north/south & east/west) expressed in km or arc-minutes.
+
+**Implementation**
+1. Add a "Map Tile Grid" tab under segmentation with controls for scale, alignment, offsets, preview/generate/delete.
+2. Build helpers to:
+   - Transform AOI extent to EPSG:4326 and snap to the chosen grid spacing.
+   - Convert offsets to lat/lon deltas (or project CRS distances) and shift the lattice before inverse transform.
+   - Derive tile dimensions from scale presets (lookup table mapping scale → km → hex count).
+3. Reuse the preview pipeline to show temporary tiles; on generate, create shapefiles under Layers/Base/Base_Grid/<AOI>/Segments/<Scale>/Tile_<row>_<col>.shp.
+4. Record metadata (scale, alignment, offsets, snapped origin) in hexmosaic.project.json for export automation.
+5. Apply styles/aoi_segment.qml, update AOI dropdowns, refresh export tree.
+
+**Validation**
+- Manual: preview + generate 1:250k tiles and confirm alignment with lat/lon grid lines (compare to reference basemap).
+- Automated: add unit tests for snapping/offset helpers (no QGIS) and integration tests gated by python scripts/check-qgis.py.
+
+**Escalation**
+- Snapping error > half hex or transforms fail; capture AOI extent and grid parameters and pause for guidance.
+
+### Recipe 3 - Equal Grid Segmentation
+(legacy flow, ensure numbering update.)
+
+### Recipe 4 - POI-Aware Segmentation
+(unchanged.)
+
+### Supporting Tasks
+- Extend docs/howtos with a "Generate map tile grid" walkthrough once implemented.
+- Update hexmosaic.project.json schema docs to describe stored metadata.
+- Review export pipelines to consume map-tile metadata when clipping or naming outputs.
+
+---
