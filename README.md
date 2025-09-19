@@ -42,7 +42,7 @@ This plugin helps you build Flashpoint Campaigns map projects in QGIS with a pre
      **Hex Tiles**, **Hex Grid Edges**, **Intersection Helpers**, **Centroid Helpers**.
 7. (Optional) **4. Set Elevation Heightmap**:
 
-   * **Download SRTM for AOI** (OpenTopography) - auto-adds to **Elevation** and styles it.
+   * **Download DEM for AOI** (OpenTopography GlobalDEM) - choose a dataset (SRTM GL1/GL3, Copernicus GLO-30/90, ALOS AW3D30, ASTER GDEM) and it auto-adds to **Elevation** with styling.
    * Browse **DEM file** and **Apply Style to Layer** if you already have a raster on disk.
 
 8. (Optional) **5. Generate Hex Elevation Layer**:
@@ -120,8 +120,8 @@ This plugin helps you build Flashpoint Campaigns map projects in QGIS with a pre
   * Choose a preset scale (1:25k, 1:50k, 1:100k, 1:200k, 1:250k) – default 1:250k (~50 km, ~100 hexes).
   * Select alignment: match AOI extent (legacy), snap to MGRS minute grid, or snap to MGRS degree grid.
   * Optionally provide north/south and east/west offsets (km or arc-minutes) before generating tiles.
-  * Preview tiles, then generate permanent layers saved under <Project>/Layers/Base/Base_Grid/<AOI>/Segments/<Scale>/Tile_<row>_<col>.shp.
-  * Scale, alignment, and offsets are persisted to hexmosaic.project.json for exports.
+  * Preview tiles, then generate permanent layers saved under `<Project>/Layers/Base/Base_Grid/<AOI>/Segments/<Scale>/Tile_<row>_<col>.shp`.
+  * Scale, alignment, and offsets are persisted to `hexmosaic.project.json` for exports.
 
   * Click **Delete Segments** to remove generated shapefiles and clear stored metadata if you need to re-run the segmentation.
 
@@ -148,19 +148,18 @@ This plugin helps you build Flashpoint Campaigns map projects in QGIS with a pre
 
 ## 4) Set Elevation Heightmap
 
-### Option A — Download SRTM for AOI (OpenTopography)
+### Option A � Download DEM for AOI (OpenTopography GlobalDEM)
 
-* Click **Download SRTM for AOI**.
+* Click **Download DEM for AOI**.
   The plugin:
 
   * Reads your selected AOI’s extent.
   * Pads **+1 km** on all sides to avoid corner cutoffs.
-  * Calls OpenTopography (SRTM) and streams a GeoTIFF directly into:
-    `Layers/Elevation/<AOI>_SRTM.tif`
-  * Adds it to **Elevation**.
-  * Auto-styles it by reading band 1 minimum elevation, rounding **down to the nearest 50**, and loading the elevation `.qml` whose filename begins with that base (e.g., `100.qml`, `-50.qml`).
+  * Calls OpenTopography’s GlobalDEM API using the chosen dataset (SRTM GL1/GL3, Copernicus GLO-30/90, ALOS AW3D30, ASTER GDEM).
+  * Streams a GeoTIFF into `Layers/Elevation/<AOI>_<Dataset>.tif` and reprojects it to the project CRS when possible.
+  * Adds it to **Elevation** and auto-applies the best-fit elevation style (falls back to `styles/elevation_hex.qml`).
 
-> Dataset: defaults to SRTM (global). We’ll add a dataset dropdown (e.g., SRTMGL3 \~90 m, SRTMGL1 \~30 m) in a future iteration. The default will be **SRTMGL3 (90 m)**, with a fallback to SRTMGL1 if needed.
+> Dataset defaults to **SRTMGL3**; switch to Copernicus, ALOS, or ASTER in the dropdown if SRTM coverage is missing or you need finer resolution.
 
 ### Option B — Use an existing DEM
 

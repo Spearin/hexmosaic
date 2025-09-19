@@ -32,6 +32,7 @@ Goal: Deliver the first milestone of the Hex Mosaic Palette initiative by creati
 - Review existing Elevation tab widgets and signals in `hexmosaic_dockwidget.py`.
 - Identify how DEM selection and hex layer selection are currently exposed (combos populated via `_populate_layers`).
 
+- Review available DEM datasets (SRTM GL1/GL3, Copernicus GLO-30/90, ALOS AW3D30, ASTER); default remains SRTM GL3 unless coverage is missing.
 **Implementation**
 1. Add controls for selecting the DEM raster, hex layer, sampling method (mean/median/min), bucket size, and output overwrite toggle.
 2. Wire the **Generate Hex Elevation Layer** button to a new slot that validates selections and kicks off a `QgsTask` for background processing.
