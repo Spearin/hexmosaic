@@ -7,73 +7,77 @@
     "default_hex_size_m": 500
   },
   "classes": [
-    {"id":"forest","target_layer":"manual_forests","fill":"polygon","priority":60,
-     "match":[
-       {"any":[["natural","wood"],["landuse","forest"]]}
-     ]},
-    {"id":"urban","target_layer":"manual_urban","fill":"polygon","priority":50,
-     "match":[
-       {"any":[["landuse","residential"],["landuse","commercial"],["landuse","industrial"]]}
-     ]},
-    {"id":"fields","target_layer":"manual_fields","fill":"polygon","priority":40,
-     "match":[
-       {"any":[["landuse","farmland"],["landuse","meadow"],["landuse","orchard"],["landuse","vineyard"]]}
-     ]},
-    {"id":"wetland","target_layer":"manual_swamps","fill":"polygon","priority":45,
-     "match":[
-       {"any":[["natural","wetland"],["landuse","wetland"]]}
-     ]},
-    {"id":"water_lake","target_layer":"manual_lake_major","fill":"polygon","priority":70,
-     "match":[
-       {"any":[["natural","water"],["water","reservoir"],["landuse","reservoir"]]}
-     ]},
-    {"id":"water_river","target_layer":"manual_river_major","fill":"polygon","priority":65,
-     "match":[
-       {"any":[["waterway","riverbank"]]}
-     ]},
-    {"id":"water_stream_minor","target_layer":"manual_stream_minor","line":"edge","priority":55,
-     "match":[
-       {"any":[["waterway","stream"],["waterway","ditch"]]}
-     ]},
-    {"id":"water_stream_major","target_layer":"manual_stream_major","line":"edge","priority":56,
-     "match":[
-       {"any":[["waterway","river"]]}
-     ]},
-    {"id":"road_highway","target_layer":"manual_highways","line":"center_to_edge","priority":58,
-     "match":[
-       {"any":[["highway","motorway"],["highway","trunk"]]}
-     ]},
-    {"id":"road_primary","target_layer":"manual_primary_roads","line":"center_to_edge","priority":57,
-     "match":[
-       {"any":[["highway","primary"]]}
-     ]},
-    {"id":"road_secondary","target_layer":"manual_secondary_roads","line":"edge","priority":35,
-     "match":[
-       {"any":[["highway","secondary"],["highway","tertiary"]]}
-     ]},
-    {"id":"rail","target_layer":"manual_rail_roads","line":"center_to_edge","priority":52,
-     "match":[
-       {"any":[["railway","rail"]]}
-     ]},
-    {"id":"airstrip","target_layer":"manual_air_strips","line":"center_to_edge","priority":53,
-     "match":[
-       {"any":[["aeroway","runway"]]}
-     ]},
-    {"id":"industrial","target_layer":"manual_industry","fill":"polygon","priority":48,
-     "match":[
-       {"any":[["landuse","industrial"]]}
-     ]},
-    {"id":"highrise","target_layer":"manual_highrise","fill":"polygon","priority":47,
-     "match":[
-       {"any":[["building","apartments"],["building:levels",">=10"]]}
-     ]},
-    {"id":"vineyards","target_layer":"manual_vineyards","fill":"polygon","priority":41,
-     "match":[
-       {"any":[["landuse","vineyard"],["landuse","orchard"]]}
-     ]}
+    {"id": "forest", "target_layer": "manual_terrain_forest", "fill": "polygon", "priority": 70,
+      "match": [
+        {"any": [["natural", "wood"], ["landuse", "forest"]]}
+      ]},
+    {"id": "wetland", "target_layer": "manual_terrain_swamp", "fill": "polygon", "priority": 65,
+      "match": [
+        {"any": [["natural", "wetland"], ["landuse", "wetland"]]}
+      ]},
+    {"id": "fields", "target_layer": "manual_terrain_field", "fill": "polygon", "priority": 60,
+      "match": [
+        {"any": [["landuse", "farmland"], ["landuse", "meadow"], ["landuse", "grass"], ["landuse", "orchard"], ["landuse", "vineyard"]]}
+      ]},
+    {"id": "vineyards", "target_layer": "manual_terrain_vineyard_orchard", "fill": "polygon", "priority": 55,
+      "match": [
+        {"any": [["landuse", "vineyard"], ["landuse", "orchard"]]}
+      ]},
+    {"id": "builtup_commercial_industry", "target_layer": "manual_builtup_commercial_industry", "fill": "polygon", "priority": 64,
+      "match": [
+        {"any": [["landuse", "industrial"], ["landuse", "commercial"], ["landuse", "retail"]]}
+      ]},
+    {"id": "builtup_town", "target_layer": "manual_builtup_town", "fill": "polygon", "priority": 63,
+      "match": [
+        {"any": [["landuse", "residential"], ["place", "town"], ["place", "village"]]}
+      ]},
+    {"id": "builtup_highrise", "target_layer": "manual_builtup_highrise", "fill": "polygon", "priority": 62,
+      "match": [
+        {"any": [["building", "apartments"], ["building:levels", ">=10"]]}
+      ]},
+    {"id": "builtup_highrise_fcrs", "target_layer": "manual_builtup_highrise_fcrs", "fill": "polygon", "priority": 61,
+      "match": [
+        {"any": [["building", "apartments"], ["building:levels", ">=10"], ["building:use", "residential"]]}
+      ]},
+    {"id": "water_lake", "target_layer": "manual_water_lake_major", "fill": "polygon", "priority": 80,
+      "match": [
+        {"any": [["natural", "water"], ["water", "reservoir"], ["landuse", "reservoir"]]}
+      ]},
+    {"id": "water_river", "target_layer": "manual_water_river_major", "fill": "polygon", "priority": 78,
+      "match": [
+        {"any": [["waterway", "riverbank"], ["natural", "water"], ["water", "river"]]}
+      ]},
+    {"id": "water_stream_major", "target_layer": "manual_water_stream_major", "line": "edge", "priority": 76,
+      "match": [
+        {"any": [["waterway", "river"]]}
+      ]},
+    {"id": "water_stream_minor", "target_layer": "manual_water_stream_minor", "line": "edge", "priority": 74,
+      "match": [
+        {"any": [["waterway", "stream"], ["waterway", "ditch"], ["waterway", "drain"], ["waterway", "canal"]]}
+      ]},
+    {"id": "road_highway", "target_layer": "manual_road_highway", "line": "center_to_edge", "priority": 72,
+      "match": [
+        {"any": [["highway", "motorway"], ["highway", "trunk"]]}
+      ]},
+    {"id": "road_primary", "target_layer": "manual_road_primary", "line": "center_to_edge", "priority": 71,
+      "match": [
+        {"any": [["highway", "primary"], ["highway", "secondary"]]}
+      ]},
+    {"id": "road_secondary", "target_layer": "manual_road_secondary", "line": "edge", "priority": 69,
+      "match": [
+        {"any": [["highway", "tertiary"], ["highway", "residential"], ["highway", "living_street"], ["highway", "service"]]}
+      ]},
+    {"id": "rail", "target_layer": "manual_road_rail_road", "line": "center_to_edge", "priority": 68,
+      "match": [
+        {"any": [["railway", "rail"], ["railway", "light_rail"], ["railway", "tram"]]}
+      ]},
+    {"id": "airstrip", "target_layer": "manual_road_airstrip", "line": "center_to_edge", "priority": 67,
+      "match": [
+        {"any": [["aeroway", "runway"], ["aeroway", "taxiway"]]}
+      ]}
   ],
   "classification": {
-    "mode": "hybrid", 
+    "mode": "hybrid",
     "probes": { "use_centroid": true, "slice_points": 6 },
     "vote_tiebreak": "centroid",
     "majority_area_fallback": true
@@ -81,8 +85,8 @@
   "snapping_rules": {
     "default": { "vertex": true, "segment": true, "tolerance_px": 20 },
     "line_behaviors": {
-      "center_to_edge": { "snap":"segment", "trace": true },
-      "edge": { "snap":"segment", "trace": true }
+      "center_to_edge": { "snap": "segment", "trace": true },
+      "edge": { "snap": "segment", "trace": true }
     }
   }
 }

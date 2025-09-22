@@ -14,8 +14,20 @@ from .dockwidget.segments import SegmentationMixin
 from .dockwidget.exporting import ExportMixin
 from .dockwidget.aoi import AoiMixin
 from .dockwidget.osm import OsmImportMixin
+from .dockwidget.mosaic import MosaicPaletteMixin
 
-class HexMosaicDockWidget(QtWidgets.QDockWidget, ProjectPathsMixin, ProjectStateMixin, ConfigMixin, ElevationMixin, SegmentationMixin, ExportMixin, AoiMixin, OsmImportMixin):
+class HexMosaicDockWidget(
+    QtWidgets.QDockWidget,
+    ProjectPathsMixin,
+    ProjectStateMixin,
+    ConfigMixin,
+    ElevationMixin,
+    SegmentationMixin,
+    ExportMixin,
+    AoiMixin,
+    OsmImportMixin,
+    MosaicPaletteMixin,
+):
     closingPlugin = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -408,8 +420,7 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget, ProjectPathsMixin, ProjectState
 
         # --- 6) HEX MOSAIC PALETTE (placeholder) ---
         pg_mosaic = QtWidgets.QWidget(); f6 = QtWidgets.QVBoxLayout(pg_mosaic)
-        btn_gen_mosaic = QtWidgets.QPushButton("Generate Mosaic Group and Layers")
-        f6.addWidget(btn_gen_mosaic)
+        self._init_mosaic_ui(f6)
         self.tb.addItem(pg_mosaic, "6. Hex Mosaic Palette")
 
         # --- 7) EXPORT MAP ---
@@ -593,6 +604,15 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget, ProjectPathsMixin, ProjectState
         row_actions.addStretch(1)
         parent_layout.addLayout(row_actions)
 
+        preview_group = QtWidgets.QGroupBox("Preview")
+        preview_layout = QtWidgets.QVBoxLayout(preview_group)
+        self.osm_preview_edit = QtWidgets.QPlainTextEdit()
+        self.osm_preview_edit.setReadOnly(True)
+        self.osm_preview_edit.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+        self.osm_preview_edit.setPlaceholderText("Click Preview to inspect the Overpass request.")
+        preview_layout.addWidget(self.osm_preview_edit)
+        parent_layout.addWidget(preview_group)
+
         # Wiring
         # Protect against the clicked(bool) signature which would pass a boolean
         # into _sync_aoi_combo_to_osm (causing a TypeError when iterating).
@@ -600,7 +620,7 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget, ProjectPathsMixin, ProjectState
         btn_browse_local.clicked.connect(self.browse_osm_local_source)
         btn_import_local.clicked.connect(self.import_osm_from_local)
         self.btn_download_osm.clicked.connect(self.start_osm_download_task)
-        self.btn_preview_osm.clicked.connect(lambda: self.log("OSM preview not implemented yet."))
+        self.btn_preview_osm.clicked.connect(self.preview_osm_request)
         self.btn_refresh_osm.clicked.connect(self.refresh_osm_layers)
 
         # Initial population
@@ -617,36 +637,22 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget, ProjectPathsMixin, ProjectState
 
         We fetch raw Overpass JSON in the background, then construct layers and write/load gpkg on the main thread.
         """
-        aoi_layer = self._selected_aoi_layer_for_osm() or self._selected_aoi_layer()
-        if not aoi_layer:
-            self.log("OSM import: Select an AOI to clip against.")
+        plan = self._collect_osm_request_plan()
+        if not plan:
             return
 
-        buffer_m = float(self.spin_osm_buffer.value()) if hasattr(self, "spin_osm_buffer") else 1000.0
-        selected = [key for key, chk in getattr(self, "osm_theme_checks", {}).items() if chk.isChecked()]
-        if not selected:
-            self.log("OSM import: Choose at least one theme.")
-            return
-
-        try:
-            clip_geom, clip_wgs84, target_crs = self._prepare_osm_clip_geometry(aoi_layer, buffer_m)
-        except RuntimeError as exc:
-            self.log(f"OSM import: {exc}")
-            return
-
-        bbox = clip_wgs84.boundingBox()
-        bbox_str = f"{bbox.yMinimum():.8f},{bbox.xMinimum():.8f},{bbox.yMaximum():.8f},{bbox.xMaximum():.8f}"
-
-        lookup = self._theme_lookup()
-        themes = [lookup.get(k) for k in selected if lookup.get(k)]
         self.log("Starting OSM download task...")
         try:
             self.btn_download_osm.setEnabled(False)
         except Exception:
             pass
 
-        # Define the background task
         parent = self
+        clip_geom = plan.clip_geom
+        target_crs = plan.target_crs
+        buffer_m = plan.buffer_m
+        selected = list(plan.theme_keys)
+        themes = list(plan.themes)
 
         class OsmFetchTask(QgsTask):
             def __init__(self, description, themes, bbox):
@@ -656,7 +662,6 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget, ProjectPathsMixin, ProjectState
 
             def run(self):
                 results = {}
-                # Collect debug messages in the task (avoid GUI calls from background)
                 self._debug = []
                 try:
                     self._debug.append(f"OsmFetchTask.run: starting fetch for {len(self.themes)} themes")
@@ -684,7 +689,6 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget, ProjectPathsMixin, ProjectState
 
             def finished(self, result):
                 try:
-                    # Emit any debug messages collected during run
                     for m in getattr(self, "_debug", []):
                         try:
                             parent.log(m)
@@ -724,9 +728,9 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget, ProjectPathsMixin, ProjectState
                             parent._remove_theme_layers_from_project(theme)
                     if summary:
                         parent._osm_last_params = {
-                            "aoi_id": aoi_layer.id(),
+                            "aoi_id": plan.aoi_layer.id(),
                             "buffer_m": buffer_m,
-                            "themes": selected,
+                            "themes": list(plan.theme_keys),
                         }
                         parent.log("OSM import complete -> " + "; ".join(summary))
                     else:
@@ -737,7 +741,7 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget, ProjectPathsMixin, ProjectState
                     except Exception:
                         pass
 
-        task = OsmFetchTask("Fetch OSM via Overpass", themes, bbox_str)
+        task = OsmFetchTask("Fetch OSM via Overpass", themes, plan.bbox_str)
         try:
             added = QgsApplication.taskManager().addTask(task)
         except Exception as e:
@@ -747,7 +751,6 @@ class HexMosaicDockWidget(QtWidgets.QDockWidget, ProjectPathsMixin, ProjectState
         if added:
             self.log("OSM import: Task submitted to QGIS task manager.")
         else:
-            # Fallback: run synchronously so the user sees activity rather than nothing.
             self.log("OSM import: Task manager unavailable or rejected task; running fetch synchronously.")
             try:
                 ok = task.run()

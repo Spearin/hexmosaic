@@ -62,9 +62,20 @@ class ProjectPathsMixin:
         os.makedirs(directory, exist_ok=True)
         return directory
 
+    def _layers_mosaic_dir(self) -> str:
+        directory = os.path.join(self._layers_dir(), "Mosaic")
+        os.makedirs(directory, exist_ok=True)
+        return directory
+
+    def _mosaic_output_path(self, layer_name: str) -> str:
+        safe = self._safe_filename(layer_name.replace(" ", "_"))
+        return os.path.join(self._layers_mosaic_dir(), f"{safe}.shp")
+
     def _osm_theme_path(self, theme_key: str) -> str:
         safe = self._safe_filename(theme_key)
-        return os.path.join(self._layers_osm_dir(), f"{safe}.gpkg")
+        directory = os.path.join(self._layers_osm_dir(), safe)
+        os.makedirs(directory, exist_ok=True)
+        return directory
 
     def _hex_elevation_output_path(self, base_name: str) -> str:
         safe = self._safe_filename(base_name.replace(" ", "_"))

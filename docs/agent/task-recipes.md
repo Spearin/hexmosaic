@@ -17,6 +17,61 @@ These playbooks outline end-to-end flows the automation agent can follow. Always
 
 ---
 
+## OSM Import Themes & Styling (Updated)
+Goal: Keep the OSM group in sync with the active AOI buffer and ensure each downloaded layer carries the correct FC: Southern Storm style.
+
+### Context
+- Import UI lives in `hexmosaic_dockwidget.py` within `_init_osm_ui`.
+- Overpass presets and style fallbacks are defined in `dockwidget/osm.py`.
+- Default styles live under `styles/osm/<theme>/<layer>.qml`.
+
+### Recipe – Download & Style Themes
+**Prep**
+- Confirm the target AOI layer exists (Map Area tab).
+- Open the OSM tab and inspect which themes are enabled.
+
+**Implementation**
+1. Select AOI and buffer > check desired themes.
+2. Click **Download & Save** (or **Import Local** when reusing a GPKG).
+3. Validate that `<Project>/Layers/OSM/<theme>.gpkg` is updated and layers reload under **OSM/<Theme>**.
+4. To restyle a layer, switch to the Hex Mosaic Palette tab, select the class that uses it, and press **Apply Style to Sources**.
+
+**Validation**
+- Manual: open layer properties to confirm the assigned `.qml` renderer.
+- Automated: unit test `_compose_overpass_query` and `_load_theme_layers` to ensure preset changes keep recursion `(._;>;); out geom;` intact.
+
+**Escalation**
+- Overpass timeouts or missing styles – capture the request, AOI, and theme list before pausing.
+
+## Hex Mosaic Palette Automation (Updated)
+Goal: Generate mosaic-ready layers (forests, fields, roads, rivers, etc.) from the Hex Tiles grid using the rules in `profiles/hexmosaic_profile.json`.
+
+### Context
+- UI wiring resides in `dockwidget/mosaic.py` and is mixed into the dock widget via `MosaicPaletteMixin`.
+- Keep all Mosaic helper functions (polygon overlap, shapefile writing, style finalisation) **inside** `MosaicPaletteMixin`; moving them to module scope breaks runtime lookups.
+- Style catalog is read from `styles/layer_specs.csv`; if a preset is missing, the mixin falls back to generic symbology but the QMLs in `styles/` should be kept current.
+- Automation writes outputs to `<Project>/Layers/Mosaic/<AOI>/` and loads them under **Mosaic > <AOI>**.
+
+### Recipe – Run Automation
+**Prep**
+- Import or load the required OSM layers (roads, water, vegetation).
+- Open the Hex Mosaic Palette tab and select the Hex Tiles layer.
+
+**Implementation**
+1. Check the classes you want to generate (forest, road_highway, water_lake, …).
+2. For each class, choose the contributing OSM polygon or line layers and adjust thresholds if needed.
+3. Click **Generate Selected Classes** (or **Generate All Classes**).
+4. Inspect `<Project>/Layers/Mosaic/<AOI>/` for newly written shapefiles; confirm they appear in the layer tree with the correct style.
+5. Optional: use **Create Manual Layer** to scaffold an empty layer for manual adjustments or **Apply Style to Sources** to restyle the inputs.
+
+**Validation**
+- Manual: spot-check a few generated features (e.g., a forest tile overlaps the expected polygons; a highway path follows hex centroids).
+- Automated: add unit tests for `_prepare_polygon_sources`, `_polygon_overlap_area`, and `_HexCache.trace_line` using synthetic data.
+
+**Escalation**
+- If automation returns zero features for a class despite obvious overlaps, log the AOI id, selected sources, and thresholds.
+
+
 ## Hex Elevation Palette Layer (Current Priority)
 Goal: Deliver the first milestone of the Hex Mosaic Palette initiative by creating a hex-aligned elevation layer that mirrors DEM styling and exposes per-hex values for downstream exports.
 
@@ -172,3 +227,4 @@ Snap AOIs to MGRS-style grids using preset scales and optional offsets.
 - Review export pipelines to consume map-tile metadata when clipping or naming outputs.
 
 ---
+

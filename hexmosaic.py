@@ -227,12 +227,20 @@ class HexMosaic:
     #--------------------------------------------------------------------------
 
     def run(self):
-        """Load (or reload) the dock and show it fresh each time."""
+        """Load (or reload) the dock and show it fresh each time."""        
+
         # Always rebuild the dock so UI/code changes take effect
         if self.dockwidget is not None:
             self.iface.removeDockWidget(self.dockwidget)
             self.dockwidget.deleteLater()
             self.dockwidget = None
+
+        try:
+            import importlib
+            from .dockwidget import osm  # noqa
+            importlib.reload(osm)
+        except Exception:
+            pass
 
         # Create a new dock instance (this is your code-only dock with buttons)
         self.dockwidget = HexMosaicDockWidget()
