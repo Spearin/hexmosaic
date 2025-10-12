@@ -65,12 +65,12 @@ class HexMosaicDockWidget(
         self.author_edit = QtWidgets.QLineEdit()
 
         self.out_dir_edit = QtWidgets.QLineEdit()
-        btn_out = QtWidgets.QPushButton("Browseâ€¦")
+        btn_out = QtWidgets.QPushButton("Browse...")
         btn_out.clicked.connect(lambda: self._browse_dir(self.out_dir_edit))
         row_out = QtWidgets.QHBoxLayout(); row_out.addWidget(self.out_dir_edit); row_out.addWidget(btn_out)
 
         self.styles_dir_edit = QtWidgets.QLineEdit()
-        btn_styles = QtWidgets.QPushButton("Browseâ€¦")
+        btn_styles = QtWidgets.QPushButton("Browse...")
         btn_styles.clicked.connect(lambda: self._browse_dir(self.styles_dir_edit))
         row_styles = QtWidgets.QHBoxLayout(); row_styles.addWidget(self.styles_dir_edit); row_styles.addWidget(btn_styles)
 
@@ -97,12 +97,12 @@ class HexMosaicDockWidget(
         f1.addRow("Project directory:", row_out)
         f1.addRow("Styles directory:", row_styles)
         
-        # --- Config file UI (default â†’ project override) ---
+        # --- Config file UI (default -> project override) ---
         self.cfg_path_edit = QtWidgets.QLineEdit()
         self.cfg_path_edit.setReadOnly(True)
-        self.cfg_source_label = QtWidgets.QLabel("source: â€“")
+        self.cfg_source_label = QtWidgets.QLabel("source: -")
 
-        btn_cfg_browse = QtWidgets.QPushButton("Browseâ€¦")
+        btn_cfg_browse = QtWidgets.QPushButton("Browse...")
         btn_cfg_default = QtWidgets.QPushButton("Use Default")
         btn_cfg_copy = QtWidgets.QPushButton("Copy Template to Project")
 
@@ -147,9 +147,9 @@ class HexMosaicDockWidget(
 
         self.width_input  = QtWidgets.QLineEdit("5000")
         self.height_input = QtWidgets.QLineEdit("5000")
-        self.lblWHm = QtWidgets.QLabel("Width Ã— Height (m): â€“")
-        self.lblWHh = QtWidgets.QLabel("Width Ã— Height (hexes): â€“")
-        self.lblCount = QtWidgets.QLabel("Total hexes: â€“")
+        self.lblWHm = QtWidgets.QLabel("Width x Height (m): -")
+        self.lblWHh = QtWidgets.QLabel("Width x Height (hexes): -")
+        self.lblCount = QtWidgets.QLabel("Total hexes: -")
 
         # Points of interest source for AOI centroids
         self.cbo_poi_layer = QtWidgets.QComboBox()
@@ -228,7 +228,7 @@ class HexMosaicDockWidget(
         self.tile_alignment_combo = QtWidgets.QComboBox()
         self.tile_alignment_combo.addItem("Match AOI extent (legacy)", "extent")
         self.tile_alignment_combo.addItem("Snap to MGRS minute grid (15')", "minute")
-        self.tile_alignment_combo.addItem("Snap to MGRS degree grid (1Â°)", "degree")
+        self.tile_alignment_combo.addItem("Snap to MGRS degree grid (1 deg)", "degree")
         self.tile_alignment_combo.setCurrentIndex(1)
         tile_form.addRow("Alignment:", self.tile_alignment_combo)
 
@@ -277,7 +277,7 @@ class HexMosaicDockWidget(
 
         self.chk_experimental_aoi = QtWidgets.QCheckBox("Allow experimental AOI sizes")
         self.chk_experimental_aoi.setToolTip(
-            "Bypass the 99Ã—99 hex guard for large test areas. Expect slower QGIS "
+            "Bypass the 99x99 hex guard for large test areas. Expect slower QGIS "
             "renders, heavy shapefiles, and longer export times."
         )
         f2.addRow("", self.chk_experimental_aoi)
@@ -348,7 +348,7 @@ class HexMosaicDockWidget(
         btn_fetch_dem.clicked.connect(self.download_dem_from_opentopo)
 
         self.elev_path_edit = QtWidgets.QLineEdit()
-        btn_pick_elev = QtWidgets.QPushButton("Browseâ€¦")
+        btn_pick_elev = QtWidgets.QPushButton("Browse...")
         def _pick_elev():
             p, _ = QtWidgets.QFileDialog.getOpenFileName(
                 self, "Choose DEM (tif)", self.out_dir_edit.text() or "",
@@ -450,8 +450,8 @@ class HexMosaicDockWidget(
         f7.addRow(row_tree_btns)
 
         # Read-only computed fields
-        self.lbl_export_px   = QtWidgets.QLabel("Pixels: â€“ Ã— â€“")
-        self.lbl_export_page = QtWidgets.QLabel("Page size (mm @ 128 dpi rule): â€“ Ã— â€“")
+        self.lbl_export_px   = QtWidgets.QLabel("Pixels: - x -")
+        self.lbl_export_page = QtWidgets.QLabel("Page size (mm @ 128 dpi rule): - x -")
         f7.addRow(self.lbl_export_px)
         f7.addRow(self.lbl_export_page)
 
@@ -585,7 +585,7 @@ class HexMosaicDockWidget(
         local_row = QtWidgets.QHBoxLayout()
         self.osm_local_path_edit = QtWidgets.QLineEdit()
         self.cbo_osm_local_theme = QtWidgets.QComboBox()
-        btn_browse_local = QtWidgets.QPushButton("Browse…")
+        btn_browse_local = QtWidgets.QPushButton("Browse...")
         btn_import_local = QtWidgets.QPushButton("Import Local")
         local_row.addWidget(self.osm_local_path_edit)
         local_row.addWidget(self.cbo_osm_local_theme)
@@ -920,7 +920,7 @@ class HexMosaicDockWidget(
             else:
                 signal.disconnect(slot)
         except (TypeError, RuntimeError):
-            # no existing connection (or already cleaned up) â€” ignore
+            # no existing connection (or already cleaned up) -- ignore
             pass
 
 
@@ -934,7 +934,7 @@ class HexMosaicDockWidget(
 
     def _ellipsize(self, s: str, limit: int = 48) -> str:
         s = s.replace("\n", " ").strip()
-        return s if len(s) <= limit else s[:limit - 1] + "â€¦"
+        return s if len(s) <= limit else s[:limit - 1] + "..."
 
     def log(self, msg: str):
         # Ensure the log tab exists
@@ -943,7 +943,7 @@ class HexMosaicDockWidget(
         self.log_view.appendPlainText(msg)
         # Update the tab title with the latest line
         title = f"8. Log: {self._ellipsize(msg)}"
-        # Qt will trim if too long; thatâ€™s okay
+        # Qt will trim if too long; that's okay
         if hasattr(self, "_log_tab_index"):
             self.tb.setItemText(self._log_tab_index, title)
 

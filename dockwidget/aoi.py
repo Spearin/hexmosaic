@@ -112,7 +112,16 @@ class AoiMixin:
         except Exception as e:
             self.log(f"Could not auto-add OpenTopoMap: {e}")
 
-        self.log("Project structure ready: Folders (Layers, Export) + Groups ordered.")
+        mosaic_count = 0
+        if hasattr(self, "_seed_mosaic_palette_layers"):
+            try:
+                mosaic_count = int(self._seed_mosaic_palette_layers())
+            except Exception as exc:
+                self.log(f"Mosaic palette setup failed: {exc}")
+        msg = "Project structure ready: Folders (Layers, Export) + Groups ordered"
+        if mosaic_count:
+            msg += f" + {mosaic_count} Mosaic palette layer(s) seeded"
+        self.log(msg + ".")
 
     def _ensure_group(self, name):
         root = QgsProject.instance().layerTreeRoot()

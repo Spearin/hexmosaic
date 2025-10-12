@@ -628,36 +628,35 @@ class MosaicPaletteMixin:
             self.log("Mosaic: choose a class and hex layer first.")
             return
         cls = self._mosaic_classes[class_id]
-        output_name = f"{hex_layer.name().split('(')[0].strip()}_{cls.target_layer}_manual"
-        shp_path = self._mosaic_output_path(output_name)
+        base_label = self._mosaic_base_label(hex_layer)
+        file_stem = self._compose_mosaic_file_stem(base_label, cls.target_layer, "manual")
+        shp_path = self._mosaic_output_path(file_stem)
+        layer_name = f"{cls.target_layer}_manual"
         crs = hex_layer.crs()
+        geometry_template = "Polygon" if cls.mode == "polygon" else "LineString"
+        mem = QgsVectorLayer(f"{geometry_template}?crs={crs.authid()}", layer_name, "memory")
+        provider = mem.dataProvider()
         if cls.mode == "polygon":
-            mem = QgsVectorLayer(f"Polygon?crs={crs.authid()}", output_name, "memory")
-            provider = mem.dataProvider()
             provider.addAttributes(list(hex_layer.fields()))
             provider.addAttributes([QgsField("class_id", QVariant.String)])
-            mem.updateFields()
         else:
-            mem = QgsVectorLayer(f"LineString?crs={crs.authid()}", output_name, "memory")
-            provider = mem.dataProvider()
             provider.addAttributes([
                 QgsField("class_id", QVariant.String),
                 QgsField("source", QVariant.String),
             ])
-            mem.updateFields()
+        mem.updateFields()
         try:
             self._write_vector_to_shp(mem, shp_path)
         except RuntimeError as exc:
             self.log(f"Mosaic: {exc}")
             return
-        layer = QgsVectorLayer(shp_path, output_name, "ogr")
+        layer = QgsVectorLayer(shp_path, layer_name, "ogr")
         if not layer.isValid():
             self.log("Mosaic: failed to load manual layer from disk.")
             return
-        self._finalize_output_layer(layer, hex_layer, cls)
-        self.log(
-            f"Mosaic: created manual layer at {os.path.relpath(shp_path, self._project_root()) if self._project_root() else shp_path}."
-        )
+        self._finalize_output_layer(layer, cls, shp_path)
+        rel = os.path.relpath(shp_path, self._project_root()) if self._project_root() else shp_path
+        self.log(f"Mosaic: created manual layer at {rel}.")
 
     def _detect_current_class(self) -> None:
         class_id = self._current_class_id()
@@ -718,9 +717,10 @@ class MosaicPaletteMixin:
         if not source_layers:
             self.log(f"Mosaic: class '{cls.class_id}' skipped (no {cls.mode} sources selected).")
             return
-        base_label = hex_layer.name().split('(')[0].strip()
-        output_name = f"{base_label}_{cls.target_layer}_clone".strip("_")
-        mem = QgsVectorLayer(f"{geometry_template}?crs={target_crs.authid()}", output_name, "memory")
+        base_label = self._mosaic_base_label(hex_layer)
+        file_stem = self._compose_mosaic_file_stem(base_label, cls.target_layer, "clone")
+        layer_name = f"{cls.target_layer}_clone"
+        mem = QgsVectorLayer(f"{geometry_template}?crs={target_crs.authid()}", layer_name, "memory")
         provider = mem.dataProvider()
         provider.addAttributes([
             QgsField("class_id", QVariant.String),
@@ -748,29 +748,27 @@ class MosaicPaletteMixin:
                     continue
                 new_feat = QgsFeature(fields)
                 new_feat.setGeometry(geom)
-                new_feat.setAttributes([
-                    cls.class_id,
-                    layer.name(),
-                ])
+                new_feat.setAttributes([cls.class_id, layer.name()])
                 provider.addFeature(new_feat)
                 total += 1
         if total == 0:
             self.log(f"Mosaic: class '{cls.class_id}' -> no features cloned from selected sources.")
             return
         mem.updateExtents()
-        shp_path = self._mosaic_output_path(output_name)
+        shp_path = self._mosaic_output_path(file_stem)
         try:
             self._write_vector_to_shp(mem, shp_path)
         except RuntimeError as exc:
             self.log(f"Mosaic: {exc}")
             return
-        layer = QgsVectorLayer(shp_path, output_name, "ogr")
+        layer = QgsVectorLayer(shp_path, layer_name, "ogr")
         if not layer.isValid():
             self.log("Mosaic: failed to load cloned layer from disk.")
             return
-        self._finalize_output_layer(layer, hex_layer, cls)
+        self._finalize_output_layer(layer, cls, shp_path)
         rel = os.path.relpath(shp_path, self._project_root()) if self._project_root() else shp_path
         self.log(f"Mosaic: cloned {total} feature(s) for {cls.class_id}, saved to {rel}.")
+
 
     def _run_mosaic_automation(self, checked_only: bool) -> None:
         hex_layer = self._resolve_hex_layer()
@@ -872,22 +870,21 @@ class MosaicPaletteMixin:
             self.log(f"Mosaic: class '{cls.class_id}' -> no tiles intersect selected sources.")
             return None
 
-        base_label = hex_layer.name().split("(")[0].strip()
-        output_name = f"{base_label}_{cls.target_layer}".strip("_")
-        shp_path = self._mosaic_output_path(output_name)
+        base_label = self._mosaic_base_label(hex_layer)
+        file_stem = self._compose_mosaic_file_stem(base_label, cls.target_layer)
+        shp_path = self._mosaic_output_path(file_stem)
         try:
             self._write_vector_to_shp(mem, shp_path)
         except RuntimeError as exc:
             self.log(f"Mosaic: {exc}")
             return None
-        layer = QgsVectorLayer(shp_path, output_name, "ogr")
+        layer = QgsVectorLayer(shp_path, cls.target_layer, "ogr")
         if not layer.isValid():
             self.log(f"Mosaic: failed to load polygon layer for {cls.class_id}.")
             return None
-        self._finalize_output_layer(layer, hex_layer, cls)
-        self.log(
-            f"Mosaic: {cls.class_id} -> {total} tiles, saved to {os.path.relpath(shp_path, self._project_root()) if self._project_root() else shp_path}."
-        )
+        self._finalize_output_layer(layer, cls, shp_path)
+        rel = os.path.relpath(shp_path, self._project_root()) if self._project_root() else shp_path
+        self.log(f"Mosaic: {cls.class_id} -> {total} tiles, saved to {rel}.")
         return layer
 
     def _generate_line_class(self, hex_layer: QgsVectorLayer, cache: "_HexCache", cls: MosaicClass, state: dict):
@@ -922,9 +919,9 @@ class MosaicPaletteMixin:
                     buffered = geom.buffer(buffer_dist, 8)
                 else:
                     buffered = None
-                path = cache.trace_line(geom, cls.line_behavior or "center_to_edge", buffered, step_dist)
-                if path is not None and not path.isEmpty():
-                    pieces.append(path)
+                path_geom = cache.trace_line(geom, cls.line_behavior or "center_to_edge", buffered, step_dist)
+                if path_geom is not None and not path_geom.isEmpty():
+                    pieces.append(path_geom)
 
         if not pieces:
             self.log(f"Mosaic: class '{cls.class_id}' -> no line paths produced.")
@@ -970,26 +967,22 @@ class MosaicPaletteMixin:
             self.log(f"Mosaic: class '{cls.class_id}' -> no valid line geometries after union.")
             return None
 
-        base_label = hex_layer.name().split("(")[0].strip()
-        output_name = f"{base_label}_{cls.target_layer}".strip("_")
-        shp_path = self._mosaic_output_path(output_name)
+        base_label = self._mosaic_base_label(hex_layer)
+        file_stem = self._compose_mosaic_file_stem(base_label, cls.target_layer)
+        shp_path = self._mosaic_output_path(file_stem)
         try:
             self._write_vector_to_shp(mem, shp_path)
         except RuntimeError as exc:
             self.log(f"Mosaic: {exc}")
             return None
-        layer = QgsVectorLayer(shp_path, output_name, "ogr")
+        layer = QgsVectorLayer(shp_path, cls.target_layer, "ogr")
         if not layer.isValid():
             self.log(f"Mosaic: failed to load line layer for {cls.class_id}.")
             return None
-        self._finalize_output_layer(layer, hex_layer, cls)
-        self.log(
-            f"Mosaic: {cls.class_id} -> {total} line part(s), saved to {os.path.relpath(shp_path, self._project_root()) if self._project_root() else shp_path}."
-        )
+        self._finalize_output_layer(layer, cls, shp_path)
+        rel = os.path.relpath(shp_path, self._project_root()) if self._project_root() else shp_path
+        self.log(f"Mosaic: {cls.class_id} -> {total} line part(s), saved to {rel}.")
         return layer
-
-    # ------------------------------------------------------------------
-    # Geometry utilities
 
     def _resolve_hex_layer(self) -> Optional[QgsVectorLayer]:
         layer_id = self.cbo_mosaic_hex_layer.currentData()
@@ -1124,33 +1117,166 @@ class MosaicPaletteMixin:
         if err != QgsVectorFileWriter.NoError:
             raise RuntimeError(f"failed to write shapefile (error code {err}): {msg}")
 
-    def _finalize_output_layer(self, layer: QgsVectorLayer, hex_layer: QgsVectorLayer, cls: MosaicClass) -> None:
+    def _seed_mosaic_palette_layers(self) -> int:
+        """Ensure blank Mosaic palette shapefiles exist and are styled/loaded."""
+        try:
+            self._load_mosaic_profile()
+            self._load_style_catalog()
+        except Exception:
+            return 0
+
+        classes = getattr(self, "_mosaic_classes", {})
+        if not classes:
+            return 0
+
+        try:
+            hex_layers = self._gather_hex_layers()
+        except Exception:
+            hex_layers = []
+
+        base_label = self._mosaic_base_label(hex_layers[0] if hex_layers else None)
+        project = QgsProject.instance()
+        crs = None
+        if hex_layers:
+            try:
+                crs = hex_layers[0].crs()
+            except Exception:
+                crs = None
+        if crs is None or not crs.isValid():
+            crs = project.crs()
+
+        created_files = 0
+        registered_layers = 0
+        classes_iter = sorted(
+            classes.values(),
+            key=lambda c: (c.priority, c.class_id),
+            reverse=True,
+        )
+
+        for cls in classes_iter:
+            file_stem = self._compose_mosaic_file_stem(base_label, cls.target_layer)
+            shp_path = self._mosaic_output_path(file_stem)
+            layer_name = cls.target_layer
+            geometry = "Polygon" if cls.mode == "polygon" else "LineString"
+
+            if not os.path.exists(shp_path):
+                mem = QgsVectorLayer(f"{geometry}?crs={crs.authid()}", layer_name, "memory")
+                provider = mem.dataProvider()
+                if provider is not None:
+                    provider.addAttributes([QgsField("class_id", QVariant.String)])
+                    if cls.mode == "polygon":
+                        provider.addAttributes([
+                            QgsField("coverage", QVariant.Double, len=10, prec=4),
+                            QgsField("source_layers", QVariant.String),
+                        ])
+                    else:
+                        provider.addAttributes([QgsField("source_layers", QVariant.String)])
+                        if cls.line_behavior:
+                            provider.addAttributes([QgsField("line_behavior", QVariant.String)])
+                mem.updateFields()
+                try:
+                    self._write_vector_to_shp(mem, shp_path)
+                    created_files += 1
+                except RuntimeError as exc:
+                    self.log(f"Mosaic: failed to seed {layer_name} -> {exc}")
+                    continue
+
+            layer = None
+            target_path = os.path.normcase(os.path.abspath(shp_path))
+            for existing in project.mapLayers().values():
+                if not isinstance(existing, QgsVectorLayer):
+                    continue
+                src = existing.source().split("|", 1)[0]
+                if os.path.normcase(os.path.abspath(src)) == target_path:
+                    layer = existing
+                    break
+
+            if layer is None:
+                layer = QgsVectorLayer(shp_path, layer_name, "ogr")
+                if not layer.isValid():
+                    self.log(f"Mosaic: could not load layer '{layer_name}' from {shp_path}.")
+                    continue
+            else:
+                layer.setName(layer_name)
+
+            self._finalize_output_layer(layer, cls, shp_path)
+            registered_layers += 1
+
+        if registered_layers:
+            summary = f"{registered_layers} layer(s)"
+            if created_files:
+                summary += f", {created_files} new shapefile(s)"
+            self.log(f"Mosaic palette ready: {summary} ensured under Mosaic group.")
+
+        return registered_layers
+
+
+    def _mosaic_base_label(self, hex_layer: Optional[QgsVectorLayer]) -> str:
+        name = ""
+        if hex_layer is not None:
+            try:
+                name = hex_layer.name().split("(")[0].strip()
+            except Exception:
+                name = ""
+        if not name and hasattr(self, "project_name_edit"):
+            try:
+                name = self.project_name_edit.text().strip()
+            except Exception:
+                name = ""
+        if not name:
+            return ""
+        sanitized = name.replace(" ", "_")
+        return self._safe_filename(sanitized)
+
+    @staticmethod
+    def _compose_mosaic_file_stem(*parts: str) -> str:
+        pieces = [p for p in parts if p]
+        return "_".join(pieces).strip("_")
+
+    def _finalize_output_layer(self, layer: QgsVectorLayer, cls: MosaicClass, shp_path: str) -> None:
         proj = QgsProject.instance()
-        base_label = hex_layer.name().split("(")[0].strip()
-        target_group = self._ensure_nested_groups(["Mosaic", base_label])
+        root = proj.layerTreeRoot()
+        geometry_type = QgsWkbTypes.geometryType(layer.wkbType())
+        subgroup = "Poly layers" if geometry_type == QgsWkbTypes.PolygonGeometry else "Line layers"
+        target_group = self._ensure_nested_groups(["Mosaic", subgroup])
+
         for child in list(target_group.children()):
-            if child.nodeType() == child.NodeLayer and child.layer() and child.layer().name() == layer.name():
+            if (
+                child.nodeType() == child.NodeLayer
+                and child.layer()
+                and child.layer().name() == layer.name()
+                and child.layer().id() != layer.id()
+            ):
                 proj.removeMapLayer(child.layer().id())
-        proj.addMapLayer(layer, False)
+
+        existing_node = root.findLayer(layer.id())
+        if existing_node is None:
+            proj.addMapLayer(layer, False)
+        else:
+            parent = existing_node.parent()
+            if parent is not None:
+                parent.removeChildNode(existing_node)
+
         target_group.addLayer(layer)
         self._apply_style_for_class(layer, cls)
         try:
-            qml_path = os.path.splitext(self._mosaic_output_path(layer.name()))[0] + '.qml'
+            qml_path = os.path.splitext(shp_path)[0] + '.qml'
             layer.saveNamedStyle(qml_path)
         except Exception:
             pass
+        layer.triggerRepaint()
 
     def _apply_style_for_class(self, layer: QgsVectorLayer, cls: MosaicClass) -> None:
         style_entry = self._style_catalog.get(cls.target_layer)
         if style_entry:
-            if self._apply_style(layer, style_entry[1]):
+            style_applied = self._apply_style(layer, style_entry[1])
+            if style_applied:
+                try:
+                    if hasattr(layer, 'saveDefaultStyle'):
+                        layer.saveDefaultStyle()
+                except Exception:
+                    pass
                 return
-            builtin_qml = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'styles', style_entry[1])
-            if os.path.isfile(builtin_qml):
-                res, _ = layer.loadNamedStyle(builtin_qml)
-                if res:
-                    layer.triggerRepaint()
-                    return
             self.log(f"Mosaic: style preset {style_entry[1]} unavailable; using fallback renderer.")
         if cls.mode == "polygon":
             from qgis.core import QgsFillSymbol, QgsSingleSymbolRenderer
@@ -1178,7 +1304,6 @@ class MosaicPaletteMixin:
             )
             layer.setRenderer(QgsSingleSymbolRenderer(symbol))
         layer.triggerRepaint()
-
     def _mosaic_output_path(self, layer_name: str) -> str:
         safe = self._safe_filename(layer_name.replace(" ", "_"))
         return os.path.join(self._layers_mosaic_dir(), f"{safe}.shp")

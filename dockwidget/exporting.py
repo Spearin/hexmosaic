@@ -59,18 +59,69 @@ class ExportMixin:
 
     def _apply_style(self, layer, style_filename):
         """
-        Try to load a QML file from the Styles directory.
-        style_filename example: 'aoi.qml'
+        Try to load a QML file from available style directories.
         """
-        styles_dir = get_persistent_setting("paths/styles_dir", "")
-        if not styles_dir:
-            return False
-        qml_path = os.path.join(styles_dir, style_filename)
-        if not os.path.isfile(qml_path):
-            return False
-        res, err = layer.loadNamedStyle(qml_path)
-        layer.triggerRepaint()
-        return bool(res)
+        candidates = []
+        ui_path = getattr(self, "styles_dir_edit", None)
+        if ui_path is not None:
+            value = ui_path.text().strip() if hasattr(ui_path, "text") else str(ui_path).strip()
+            if value:
+                candidates.append(value)
+        stored = get_persistent_setting("paths/styles_dir", "")
+        if stored and stored not in candidates:
+            candidates.append(stored)
+        plugin_styles = os.path.join(os.path.dirname(os.path.dirname(__file__)), "styles")
+        if os.path.isdir(plugin_styles) and plugin_styles not in candidates:
+            candidates.append(plugin_styles)
+
+        attempts = []
+        for base in candidates:
+            qml_path = os.path.join(base, style_filename)
+            if not os.path.isfile(qml_path):
+                attempts.append((qml_path, "missing"))
+                continue
+            result = layer.loadNamedStyle(qml_path)
+            detail = repr(result)
+            if isinstance(result, tuple):
+                res = None
+                err = ''
+                if len(result) >= 2:
+                    first, second = result[0], result[1]
+                    if isinstance(second, bool) and not isinstance(first, bool):
+                        res = second
+                        err = first if isinstance(first, str) else ''
+                    elif isinstance(first, bool):
+                        res = first
+                        err = second if isinstance(second, str) else ''
+                    else:
+                        res = bool(first)
+                        err = str(second)
+                elif len(result) == 1:
+                    res = bool(result[0])
+                else:
+                    res = False
+            else:
+                res = bool(result)
+                err = ''
+            try:
+                self.log(f"loadNamedStyle({qml_path}) -> {detail}")
+            except Exception:
+                pass
+            if res:
+                layer.triggerRepaint()
+                return True
+            attempts.append((qml_path, err or detail or 'load failed'))
+
+
+        if candidates and not attempts:
+            attempts.append((os.path.join(candidates[-1], style_filename), "load returned no detail"))
+
+        for path, reason in attempts or [(os.path.join(plugin_styles, style_filename), "no style directories configured")]:
+            try:
+                self.log(f"Style lookup failed at {path}: {reason}")
+            except Exception:
+                pass
+        return False
 
     def _style_grid_layer(self, layer, kind):
         """

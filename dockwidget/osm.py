@@ -13,7 +13,6 @@ Assumptions:
 - Consumer implements: log(), _project_root(), _ensure_group(name),
   _utm_epsg_for_lonlat(lon, lat)
 - Consumer wires the UI controls used here (see dock init).
-
 """
 from __future__ import annotations
 
@@ -21,12 +20,10 @@ import json
 import os
 import pathlib
 import time
-import urllib.error
-import urllib.request
-import urllib.parse
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import requests
 from qgis.PyQt import QtWidgets
 from qgis.PyQt.QtCore import QVariant
 from qgis.core import (
@@ -45,7 +42,33 @@ from qgis.core import (
 )
 
 from .settings_dialog import get_persistent_setting
+from typing import Any
 
+@dataclass(frozen=True)
+class QueryMapEntry:
+    """
+    Declarative mapping for a single Overpass query:
+    - oql_template: Overpass QL fragment (may contain {{bbox}}).
+    - geometry: 'point' | 'line' | 'polygon' (how to interpret returned elements)
+    - storage_name: file-friendly name for saving (and sublayer key)
+    - display_name: nice name for the layer in QGIS
+    """
+    oql_template: str
+    geometry: str
+    storage_name: str
+    display_name: str
+
+@dataclass(frozen=True)
+class LocalMapEntry:
+    """
+    Declarative mapping for a local import:
+    - source_name: sublayer name (for GPKG) or stem (for SHP), used to select input
+    - geometry/storage/display as above for output.
+    """
+    source_name: str
+    geometry: str
+    storage_name: str
+    display_name: str
 
 @dataclass(frozen=True)
 class OsmLayerSpec:
@@ -77,21 +100,21 @@ class OsmRequestPlan:
 class OsmImportMixin:
     """Provides Overpass + offline import helpers for OSM layers."""
 
-    # Overpass mirrors we rotate through on failure.
-    OVERPASS_URLS = (
+    # Overpass mirrors we rotate through on failure (in-order attempts).
+    OVERPASS_URLS: Tuple[str, ...] = (
         "https://overpass-api.de/api/interpreter",
         "https://overpass.kumi.systems/api/interpreter",
         "https://overpass.openstreetmap.fr/api/interpreter",
     )
 
     # Backwards-compat alias for code that references a single URL
-    # (e.g., preview text). Points to the currently selected mirror.
+    # (e.g., preview text). Points to the most recently successful mirror.
     @property
     def OVERPASS_URL(self) -> str:
         idx = getattr(self, "_overpass_url_index", 0)
         return self.OVERPASS_URLS[idx % len(self.OVERPASS_URLS)]
 
-    # ----- Themes (same structure you uploaded; feel free to edit) -----
+    # ----- Themes (edit as you like) -----
 
     OSM_THEMES: Sequence[OsmTheme] = (
         OsmTheme(
@@ -428,6 +451,13 @@ class OsmImportMixin:
             chk.setChecked(key in params.get("themes", []))
         self.download_osm_layers()
 
+    def browse_osm_local_source(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Select OSM file", "", "GeoPackages (*.gpkg);;Shapefiles (*.shp);;All files (*.*)"
+        )
+        if path:
+            self.osm_local_path_edit.setText(path)
+
     def import_osm_from_local(self):
         lookup = self._theme_lookup()
         theme_key = self.cbo_osm_local_theme.currentData() if hasattr(self, "cbo_osm_local_theme") else None
@@ -506,6 +536,91 @@ class OsmImportMixin:
 
     # -------------------- Overpass building & download --------------------
 
+    def download_osm_with_query_map(
+        self,
+        entries: Sequence[QueryMapEntry],
+        clip_geom: QgsGeometry,
+        target_crs: QgsCoordinateReferenceSystem,
+        bbox: Optional[str] = None,
+        timeout: int = 180,
+    ) -> int:
+        """
+        Build a one-off theme from declarative entries and run the normal pipeline.
+        Returns total features written across all mapped layers.
+        """
+        if bbox is None:
+            # Derive from current AOI + buffer, like the normal flow
+            aoi_layer = self._selected_aoi_layer_for_osm() or self._selected_aoi_layer()
+            if not aoi_layer:
+                self.log("OSM import: Select an AOI to clip against.")
+                return 0
+            buffer_m = float(self.spin_osm_buffer.value()) if hasattr(self, "spin_osm_buffer") else 1000.0
+            try:
+                _clip, clip_wgs84, target = self._prepare_osm_clip_geometry(aoi_layer, buffer_m)
+                bbox = f"{clip_wgs84.boundingBox().yMinimum():.8f},{clip_wgs84.boundingBox().xMinimum():.8f}," \
+                    f"{clip_wgs84.boundingBox().yMaximum():.8f},{clip_wgs84.boundingBox().xMaximum():.8f}"
+                clip_geom = _clip
+                target_crs = target
+            except RuntimeError as exc:
+                self.log(f"OSM import: {exc}")
+                return 0
+
+        # Convert map entries to ephemeral layer specs by “compiling” the template
+        specs: List[OsmLayerSpec] = []
+        for e in entries:
+            # use {bbox} style for compatibility with _compose_overpass_query (though we’ll render directly)
+            specs.append(OsmLayerSpec(
+                storage_name=e.storage_name,
+                display_name=e.display_name,
+                geometry=e.geometry,
+                query=e.oql_template  # will be rendered via _render_oql_template
+            ))
+
+        # Build a throwaway theme
+        theme = OsmTheme(key="custom", label="Custom", layers=tuple(specs))
+
+        # Custom download loop that uses the template renderer
+        total = 0
+        layers: List[Tuple[QgsVectorLayer, str]] = []
+        with requests.Session() as sess:
+            for spec in theme.layers:
+                # render template ({{bbox}} -> bbox) and fetch
+                ql = self._render_oql_template(spec.query, bbox, timeout=timeout)
+                data, err = self._fetch_overpass_json(ql, timeout_s=timeout, max_retries=3, session=sess)
+                if err:
+                    raise RuntimeError(f"Overpass request failed for {spec.storage_name}: {err}")
+                elements = data.get("elements", [])
+                layer = self._elements_to_layer(spec, elements, clip_geom, target_crs)
+                if layer and layer.featureCount():
+                    layers.append((layer, spec.storage_name))
+                    total += layer.featureCount()
+
+        if not layers:
+            self._remove_theme_layers_from_project(theme)
+            return 0
+        theme_dir = self._osm_theme_path(theme.key)
+        self._write_theme_to_gpkg(theme_dir, layers)
+        self._load_theme_layers(theme, theme_dir)
+        return total
+    
+    def preview_query_map(self, entries: Sequence[QueryMapEntry], bbox: str, timeout: int = 180) -> str:
+        lines = [
+            "Custom OSM Query Map Preview",
+            "----------------------------",
+            f"Bounding box (WGS84): {bbox}",
+            f"HTTP {self.OVERPASS_URL}",
+            "Entries:",
+        ]
+        for e in entries:
+            ql = self._render_oql_template(e.oql_template, bbox, timeout=timeout)
+            lines.append(f"- {e.display_name} [{e.geometry}] -> '{e.storage_name}'")
+            lines.append("  Overpass query:")
+            for qline in ql.splitlines():
+                lines.append(f"    {qline}")
+        text = "\n".join(lines)
+        self._set_osm_preview_text(text)
+        return text
+
     def _compose_overpass_query(self, spec: OsmLayerSpec, bbox: str) -> str:
         body = spec.query.format(bbox=bbox).strip()
         indented = "\n".join(f"  {line}" for line in body.splitlines())
@@ -517,9 +632,27 @@ class OsmImportMixin:
             "(._;>;);\n"
             "out geom;\n"
         )
+    
+    def _render_oql_template(self, template: str, bbox: str, timeout: int = 180) -> str:
+        """
+        Renders an Overpass QL request from a template that may contain {{bbox}}.
+        Always returns JSON + expanded geometry.
+        """
+        # Allow both {{bbox}} and {bbox} styles for convenience
+        body = template.replace("{{bbox}}", bbox).replace("{bbox}", bbox).strip()
+        indented = "\n".join(f"  {line}" for line in body.splitlines())
+        return (
+            f"[out:json][timeout:{timeout}];\n"
+            "(\n"
+            f"{indented}\n"
+            ");\n"
+            "(._;>;);\n"
+            "out geom;\n"
+        )
 
-    def _tile_bbox(self, bbox: str, max_span: float = 0.25) -> List[str]:
-        # split large bbox into <= max_span degree tiles
+
+    def _tile_bbox(self, bbox: str, max_span: float = 0.10) -> List[str]:
+        """Split large bbox into <= max_span degree tiles (smaller = friendlier to Overpass)."""
         try:
             y_min, x_min, y_max, x_max = map(float, bbox.split(','))
         except ValueError:
@@ -565,94 +698,111 @@ class OsmImportMixin:
         self._write_theme_to_gpkg(theme_dir, layers)
         self._load_theme_layers(theme, theme_dir)
         return total
+    
+    def import_local_with_map(
+        self,
+        entries: Sequence[LocalMapEntry],
+        source_path: str,
+        clip_geom: QgsGeometry,
+        target_crs: QgsCoordinateReferenceSystem,
+    ) -> int:
+        """
+        Import selected sublayers from a local dataset and write them out using
+        the target names/geometries from the map entries.
+        """
+        src = pathlib.Path(source_path)
+        if not src.exists():
+            self.log(f"OSM import: Local file not found -> {source_path}")
+            return 0
 
-    def _fetch_overpass_elements(self, spec: OsmLayerSpec, bbox: str) -> List[dict]:
-        if not hasattr(self, "_overpass_url_index"):
-            self._overpass_url_index = 0
-        tiles = self._tile_bbox(bbox)
-        combined: Dict[Tuple[str, int], dict] = {}
-        for tile in tiles:
-            query = self._compose_overpass_query(spec, tile)
-            payload = self._download_overpass_payload(query, tile)
-            try:
-                parsed = json.loads(payload.decode("utf-8"))
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(f"Invalid response from Overpass for bbox {tile}: {exc}") from exc
-            for element in parsed.get("elements", []):
-                elem_type = element.get("type")
-                elem_id = element.get("id")
-                if elem_type is None or elem_id is None:
+        sublayers: List[str] = []
+        is_gpkg = source_path.lower().endswith(".gpkg")
+        if is_gpkg:
+            probe = QgsVectorLayer(source_path, "", "ogr")
+            if probe.isValid():
+                sublayers = [s.split(":")[-1] for s in probe.dataProvider().subLayers()]
+
+        layers: List[Tuple[QgsVectorLayer, str]] = []
+        total = 0
+
+        for e in entries:
+            # Resolve the input layer for this mapping
+            if is_gpkg:
+                if e.source_name not in sublayers:
+                    self.log(f"OSM import: '{e.source_name}' not found in {source_path}")
                     continue
-                combined[(elem_type, elem_id)] = element
-        return list(combined.values())
+                uri = f"{source_path}|layername={e.source_name}"
+            else:
+                # SHP or other single-layer file: either the stem must match, or allow single-entry imports
+                if len(entries) > 1 and pathlib.Path(source_path).stem != pathlib.Path(e.source_name).stem:
+                    # Skip if multimap and names don't match
+                    continue
+                uri = source_path
 
-    def _download_overpass_payload(self, query: str, tile: str) -> bytes:
-        retryable = {429, 502, 503, 504}
-        max_attempts = 3
+            layer = QgsVectorLayer(uri, e.display_name, "ogr")
+            if not layer.isValid():
+                self.log(f"OSM import: Failed to open '{e.source_name}' from {source_path}")
+                continue
 
-        # Try both urlencoded and raw payloads; some mirrors prefer one or the other.
-        form_payload = urllib.parse.urlencode({"data": query}).encode("utf-8")
-        raw_payload = query.encode("utf-8")
-        payloads = [
-            ("application/x-www-form-urlencoded; charset=utf-8", form_payload),
-            ("text/plain; charset=utf-8", raw_payload),
-        ]
-        last_error: Optional[Exception] = None
+            prepared = self._clip_and_prepare_layer(layer, e.geometry, clip_geom, target_crs)
+            if prepared and prepared.featureCount():
+                layers.append((prepared, e.storage_name))
+                total += prepared.featureCount()
+
+        if layers:
+            theme = OsmTheme(key="custom_local", label="Custom (Local)", layers=tuple(
+                OsmLayerSpec(storage_name=sn, display_name=lyr.name(), geometry="polygon", query="")
+                for (lyr, sn) in layers
+            ))
+            theme_dir = self._osm_theme_path(theme.key)
+            self._write_theme_to_gpkg(theme_dir, layers)
+            self._load_theme_layers(theme, theme_dir)
+        else:
+            self._remove_theme_layers_from_project(OsmTheme(key="custom_local", label="Custom (Local)", layers=()))
+
+        return total
+
+
+    # --- HTTP: robust Overpass client (requests + mirrors + 429 handling) ---
+
+    def _fetch_overpass_json(
+        self,
+        query_ql: str,
+        timeout_s: int = 180,
+        max_retries: int = 3,
+        session: Optional[requests.Session] = None,
+    ) -> Tuple[Optional[dict], Optional[str]]:
+        s = session or requests.Session()
+        headers = self._overpass_headers_for_requests()
+        last_err = None
         start_index = getattr(self, "_overpass_url_index", 0)
 
-        for offset in range(len(self.OVERPASS_URLS)):
-            idx = (start_index + offset) % len(self.OVERPASS_URLS)
-            url = self.OVERPASS_URLS[idx]
-            for attempt in range(max_attempts):
-                should_retry = False
-                for content_type, data in payloads:
-                    headers = self._overpass_headers(content_type)
-                    request = urllib.request.Request(url, data=data, headers=headers)
-                    try:
-                        with urllib.request.urlopen(request, timeout=180) as resp:
-                            # lock in the successful mirror for previews
-                            self._overpass_url_index = idx
-                            return resp.read()
-                    except urllib.error.HTTPError as exc:
-                        last_error = exc
-                        if exc.code in retryable:
-                            retry_after = exc.headers.get("Retry-After")
-                            delay = None
-                            if retry_after:
-                                try:
-                                    delay = float(retry_after)
-                                except ValueError:
-                                    delay = None
-                            if delay is None:
-                                delay = min(2 ** attempt, 60.0)
-                            time.sleep(delay)
-                            should_retry = True
-                            break  # break out of payload loop, keep same attempt number
-                        elif content_type == payloads[0][0]:
-                            # try the raw payload before giving up this attempt
-                            continue
-                        else:
-                            raise RuntimeError(
-                                f"Overpass request failed for {tile} via {url}: HTTP {exc.code} {exc.reason}"
-                            ) from exc
-                    except urllib.error.URLError as exc:
-                        last_error = exc
-                        time.sleep(min(2 ** attempt, 30.0))
-                        should_retry = True
-                        break
-                if not should_retry:
-                    break
-            # if we get here, either non-retryable or exhausted attempts; try next mirror or raise below
-            if last_error is None:
-                raise RuntimeError(f"Overpass request failed for bbox {tile}: unknown error")
-            if not isinstance(last_error, (urllib.error.HTTPError, urllib.error.URLError)) or getattr(last_error, "code", None) not in retryable:
-                raise RuntimeError(f"Overpass request failed for bbox {tile} via {url}: {last_error}") from last_error
+        for attempt in range(1, max_retries + 1):
+            for offset in range(len(self.OVERPASS_URLS)):
+                idx = (start_index + offset) % len(self.OVERPASS_URLS)
+                base = self.OVERPASS_URLS[idx]
+                try:
+                    # 1) Try GET with encoded query (faster, cache-friendly)
+                    resp = s.get(base, params={"data": query_ql}, headers=headers, timeout=timeout_s)
+                    if resp.status_code == 414:  # URI too long → fall back to POST
+                        resp = s.post(base, data={"data": query_ql}, headers=headers, timeout=timeout_s)
+                    if resp.status_code == 429:
+                        ra = resp.headers.get("Retry-After")
+                        wait_s = int(ra) if (ra and ra.isdigit()) else min(60 * attempt, 180)
+                        time.sleep(wait_s)
+                        continue
+                    resp.raise_for_status()
+                    self._overpass_url_index = idx  # remember good mirror
+                    return resp.json(), None
+                except requests.RequestException as e:
+                    last_err = f"{type(e).__name__}: {e}"
+                    time.sleep(1.5 * attempt)
+                    continue
 
-        # All mirrors failed
-        raise RuntimeError(f"Overpass request failed for bbox {tile}: {last_error}")
+        return None, last_err or "Unknown network error"
 
-    def _overpass_headers(self, content_type: str) -> Dict[str, str]:
-        # Build a helpful User-Agent and include contact if configured.
+    def _overpass_headers_for_requests(self) -> Dict[str, str]:
+        """Build headers for requests-based HTTP."""
         agent_cfg = get_persistent_setting("network/user_agent", "").strip()
         contact = get_persistent_setting("network/contact_email", "").strip()
         if agent_cfg:
@@ -665,9 +815,7 @@ class OsmImportMixin:
             agent = f"HexMosaic/{qv} (QGIS plugin)"
             if contact:
                 agent = f"{agent} contact:{contact}"
-
         headers = {
-            "Content-Type": content_type,
             "User-Agent": agent,
             "Accept": "application/json",
         }
@@ -675,6 +823,26 @@ class OsmImportMixin:
         if contact:
             headers["From"] = contact
         return headers
+
+    def _fetch_overpass_elements(self, spec: OsmLayerSpec, bbox: str) -> List[dict]:
+        """Fetch and merge Overpass elements across tiles for a single layer spec."""
+        tiles = self._tile_bbox(bbox)
+        combined: Dict[Tuple[str, int], dict] = {}
+
+        with requests.Session() as sess:
+            for tile in tiles:
+                query = self._compose_overpass_query(spec, tile)
+                data, err = self._fetch_overpass_json(query, timeout_s=180, max_retries=3, session=sess)
+                if err:
+                    raise RuntimeError(f"Overpass request failed for bbox {tile}: {err}")
+                for element in data.get("elements", []):
+                    et = element.get("type")
+                    eid = element.get("id")
+                    if et is None or eid is None:
+                        continue
+                    combined[(et, eid)] = element
+
+        return list(combined.values())
 
     # -------------------- JSON → layer --------------------
 
@@ -694,11 +862,13 @@ class OsmImportMixin:
             to_target = QgsCoordinateTransform(wgs84, target_crs, transform_context)
         mem_layer = self._create_memory_layer(spec.display_name, spec.geometry, target_crs)
 
-        # Brute-collect tag keys across all features to build a stable schema.
+        # Collect tag keys to build a stable schema.
         tag_keys = set()
         for element in elements:
             tags = element.get("tags", {})
-            tag_keys.update(tags.keys())
+            if isinstance(tags, dict):
+                tag_keys.update(tags.keys())
+
         fields = QgsFields()
         fields.append(QgsField("osm_id", QVariant.String))
         for key in sorted(tag_keys):
