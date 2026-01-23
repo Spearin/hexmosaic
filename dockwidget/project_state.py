@@ -296,6 +296,8 @@ class ProjectStateMixin:
             self.cbo_hex_dem_layer.clear()
         if hasattr(self, "cbo_hex_tiles_layer"):
             self.cbo_hex_tiles_layer.clear()
+        if hasattr(self, "cbo_grid_hex_layer"):
+            self.cbo_grid_hex_layer.clear()
         self._update_hex_elevation_button_state()
         self._osm_last_params = {}
         if hasattr(self, "cboAOI_osm"):

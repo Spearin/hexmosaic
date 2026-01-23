@@ -1,4 +1,4 @@
-﻿import os
+import os
 import shutil
 
 from qgis.PyQt import QtWidgets  # pyright: ignore[reportMissingImports]
@@ -136,7 +136,7 @@ class HexMosaicDockWidget(
         self.btn_set_anchor.clicked.connect(self.set_anchor_at_canvas_center)
         self.btn_set_crs_utm.clicked.connect(self.set_project_crs_from_anchor)
 
-        self.tb.addItem(pg_setup, "1. Setup")
+        self._idx_setup = self.tb.addItem(pg_setup, "1. Setup")
 
         # --- 2) MAP AREA ---
         pg_aoi = QtWidgets.QWidget(); f2 = QtWidgets.QFormLayout(pg_aoi)
@@ -211,6 +211,24 @@ class HexMosaicDockWidget(
         row_seg_dims.addWidget(self.seg_cols_spin)
         row_seg_dims.addStretch(1)
         equal_form.addRow("Rows x Columns:", row_seg_dims)
+        equal_offset_widget = QtWidgets.QWidget()
+        equal_offset_grid = QtWidgets.QGridLayout(equal_offset_widget)
+        self.equal_offset_ns_spin = QtWidgets.QDoubleSpinBox()
+        self.equal_offset_ns_spin.setRange(-500.0, 500.0)
+        self.equal_offset_ns_spin.setDecimals(3)
+        self.equal_offset_ns_spin.setSingleStep(0.1)
+        self.equal_offset_ns_spin.setSuffix(" km")
+        self.equal_offset_ew_spin = QtWidgets.QDoubleSpinBox()
+        self.equal_offset_ew_spin.setRange(-500.0, 500.0)
+        self.equal_offset_ew_spin.setDecimals(3)
+        self.equal_offset_ew_spin.setSingleStep(0.1)
+        self.equal_offset_ew_spin.setSuffix(" km")
+        equal_offset_grid.addWidget(QtWidgets.QLabel("North/South offset:"), 0, 0)
+        equal_offset_grid.addWidget(self.equal_offset_ns_spin, 0, 1)
+        equal_offset_grid.addWidget(QtWidgets.QLabel("East/West offset:"), 1, 0)
+        equal_offset_grid.addWidget(self.equal_offset_ew_spin, 1, 1)
+        equal_form.addRow("Offsets:", equal_offset_widget)
+
         self.seg_mode_tabs.addTab(tab_equal, "Equal Grid")
 
         # Map tile grid tab
@@ -251,8 +269,9 @@ class HexMosaicDockWidget(
         offset_grid.addWidget(self.tile_offset_ew_spin, 1, 1)
         offset_grid.addWidget(QtWidgets.QLabel("Units:"), 0, 2)
         offset_grid.addWidget(self.tile_offset_unit_combo, 0, 3, 2, 1)
-        tile_form.addRow("Offsets:", offset_widget)
+        tile_form.addRow("Map tile offsets:", offset_widget)
 
+        # Equal-grid offsets
         self.tile_offset_note = QtWidgets.QLabel("Offsets adjust tile origin relative to grid lines; positive values shift north/east.")
         self.tile_offset_note.setWordWrap(True)
         tile_form.addRow("", self.tile_offset_note)
@@ -298,6 +317,14 @@ class HexMosaicDockWidget(
         self.seg_mode_tabs.currentChanged.connect(self._update_segment_buttons_state)
         self.tile_alignment_combo.currentIndexChanged.connect(self._update_map_tile_controls_state)
         self.tile_offset_unit_combo.currentIndexChanged.connect(self._update_map_tile_controls_state)
+        if hasattr(self, "tile_offset_ns_spin"):
+            self.tile_offset_ns_spin.valueChanged.connect(self._update_segment_buttons_state)
+        if hasattr(self, "tile_offset_ew_spin"):
+            self.tile_offset_ew_spin.valueChanged.connect(self._update_segment_buttons_state)
+        if hasattr(self, "equal_offset_ns_spin"):
+            self.equal_offset_ns_spin.valueChanged.connect(self._update_segment_buttons_state)
+        if hasattr(self, "equal_offset_ew_spin"):
+            self.equal_offset_ew_spin.valueChanged.connect(self._update_segment_buttons_state)
         self.btn_preview_segments.clicked.connect(self.preview_segments_for_selected_aoi)
         self.btn_segment_aoi.clicked.connect(self.segment_selected_aoi)
         self.btn_clear_segments.clicked.connect(self.clear_segments_for_selected_aoi)
@@ -309,19 +336,56 @@ class HexMosaicDockWidget(
         self.unit_m.toggled.connect(self._recalc_aoi_info)
         self.chk_experimental_aoi.toggled.connect(self._recalc_aoi_info)
 
-        self.tb.addItem(pg_aoi, "2. Map Area")
+        self._idx_map_area = self.tb.addItem(pg_aoi, "2. Map Area")
 
         # --- 3) GENERATE GRID ---
         pg_grid = QtWidgets.QWidget(); f3 = QtWidgets.QFormLayout(pg_grid)
         self.cboAOI = QtWidgets.QComboBox()
         btn_refresh_aoi = QtWidgets.QPushButton("Refresh")
         row_aoi = QtWidgets.QHBoxLayout(); row_aoi.addWidget(self.cboAOI); row_aoi.addWidget(btn_refresh_aoi)
+
+        self.chk_grid_tiles = QtWidgets.QCheckBox("Hex Tiles")
+        self.chk_grid_edges = QtWidgets.QCheckBox("Hex Grid Edges")
+        self.chk_grid_vertices = QtWidgets.QCheckBox("Intersection Helpers")
+        self.chk_grid_centroids = QtWidgets.QCheckBox("Centroid Helpers")
+        for chk in (self.chk_grid_tiles, self.chk_grid_edges, self.chk_grid_vertices, self.chk_grid_centroids):
+            chk.setChecked(True)
+
+        grid_opts = QtWidgets.QGridLayout()
+        grid_opts.addWidget(self.chk_grid_tiles, 0, 0)
+        grid_opts.addWidget(self.chk_grid_edges, 0, 1)
+        grid_opts.addWidget(self.chk_grid_vertices, 1, 0)
+        grid_opts.addWidget(self.chk_grid_centroids, 1, 1)
+
+        self.btn_grid_toggle_all = QtWidgets.QPushButton("Check/Uncheck All")
+        row_grid_toggle = QtWidgets.QHBoxLayout()
+        row_grid_toggle.addWidget(self.btn_grid_toggle_all)
+        row_grid_toggle.addStretch(1)
+
+        self.cbo_grid_hex_layer = QtWidgets.QComboBox()
+        btn_refresh_grid_hex = QtWidgets.QPushButton("Refresh")
+        row_grid_hex = QtWidgets.QHBoxLayout()
+        row_grid_hex.addWidget(self.cbo_grid_hex_layer)
+        row_grid_hex.addWidget(btn_refresh_grid_hex)
+
+        self.lbl_grid_source_note = QtWidgets.QLabel(
+            "Note: If Hex Tiles is unchecked, select an existing Hex Tiles layer to generate helpers."
+        )
+        self.lbl_grid_source_note.setWordWrap(True)
+
         btn_build_grid = QtWidgets.QPushButton("Build Hex Grid")
         f3.addRow("AOI:", row_aoi)
+        f3.addRow("Generate layers:", grid_opts)
+        f3.addRow("", row_grid_toggle)
+        f3.addRow("Source Hex Tiles:", row_grid_hex)
+        f3.addRow("", self.lbl_grid_source_note)
         f3.addRow(btn_build_grid)
-        self.tb.addItem(pg_grid, "3. Generate Grid")
+        self._idx_grid = self.tb.addItem(pg_grid, "3. Generate Grid")
         btn_refresh_aoi.clicked.connect(self._populate_aoi_combo)
         btn_build_grid.clicked.connect(self.build_hex_grid)
+        btn_refresh_grid_hex.clicked.connect(self._populate_grid_hex_layer_inputs)
+        self.btn_grid_toggle_all.clicked.connect(self._toggle_grid_layer_checks)
+        self.chk_grid_tiles.toggled.connect(self._update_grid_source_state)
 
        # --- 4) SET ELEVATION HEIGHTMAP ---
         pg_elev = QtWidgets.QWidget(); f4 = QtWidgets.QFormLayout(pg_elev)
@@ -342,6 +406,14 @@ class HexMosaicDockWidget(
         if default_idx >= 0:
             self.cbo_dem_source.setCurrentIndex(default_idx)
         f4.addRow("DEM source:", self.cbo_dem_source)
+
+        self.spin_elev_step = QtWidgets.QDoubleSpinBox()
+        self.spin_elev_step.setRange(1.0, 5000.0)
+        self.spin_elev_step.setDecimals(1)
+        self.spin_elev_step.setSingleStep(5.0)
+        self.spin_elev_step.setSuffix(" m")
+        self.spin_elev_step.setValue(50.0)
+        f4.addRow("Elevation step:", self.spin_elev_step)
 
         btn_fetch_dem = QtWidgets.QPushButton("Download DEM for AOI")
         f4.addRow(btn_fetch_dem)
@@ -399,11 +471,12 @@ class HexMosaicDockWidget(
         hex_form.addRow(self.btn_generate_hex_elev)
 
         f4.addRow(grp_hex_palette)
-        self.tb.addItem(pg_elev, "4. Set Elevation Heightmap")
+        self._idx_elev = self.tb.addItem(pg_elev, "4. Set Elevation Heightmap")
 
         # wiring
         btn_refresh_aoi_elev.clicked.connect(self._populate_aoi_combo)
         btn_refresh_aoi_elev.clicked.connect(self._sync_aoi_combo_to_elev)
+        self.spin_elev_step.valueChanged.connect(self._on_elevation_step_changed)
         btn_refresh_styles.clicked.connect(self._refresh_elevation_styles)
         self._safe_disconnect(btn_apply_elev.clicked, self._apply_elevation_style_and_add)
         self._safe_disconnect(btn_apply_elev.clicked)
@@ -413,17 +486,12 @@ class HexMosaicDockWidget(
         self.cbo_hex_tiles_layer.currentIndexChanged.connect(self._update_hex_elevation_button_state)
         self.btn_generate_hex_elev.clicked.connect(self.generate_hex_elevation_layer)
 
-        # --- 5) IMPORT OSM ---
-        pg_osm = QtWidgets.QWidget(); f5 = QtWidgets.QVBoxLayout(pg_osm)
-        self._init_osm_ui(f5)
-        self.tb.addItem(pg_osm, "5. Import OSM")
-
-        # --- 6) HEX MOSAIC PALETTE (placeholder) ---
+        # --- 5) LAYER DATA PROCESSING ---
         pg_mosaic = QtWidgets.QWidget(); f6 = QtWidgets.QVBoxLayout(pg_mosaic)
         self._init_mosaic_ui(f6)
-        self.tb.addItem(pg_mosaic, "6. Hex Mosaic Palette")
+        self._idx_mosaic = self.tb.addItem(pg_mosaic, "5. Layer Data Processing")
 
-        # --- 7) EXPORT MAP ---
+        # --- 6) EXPORT MAP ---
         pg_export = QtWidgets.QWidget()
         f7 = QtWidgets.QFormLayout(pg_export)
 
@@ -481,7 +549,7 @@ class HexMosaicDockWidget(
 
         f7.addRow(row_actions)
 
-        self.tb.addItem(pg_export, "7. Export Map")
+        self._idx_export = self.tb.addItem(pg_export, "6. Export Map")
 
         # --- wire up Export Map (after widgets exist) ---
         btn_refresh_aoi2.clicked.connect(lambda: (self._populate_aoi_combo(),
@@ -506,7 +574,18 @@ class HexMosaicDockWidget(
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(2000)
         vl_log.addWidget(self.log_view)
-        self._log_tab_index = self.tb.addItem(pg_log, "8. Log")
+        self._log_tab_index = self.tb.addItem(pg_log, "7. Log")
+
+        refresher_pairs = [
+            (getattr(self, "_idx_map_area", -1), self._refresh_map_area_panel),
+            (getattr(self, "_idx_grid", -1), self._refresh_grid_panel),
+            (getattr(self, "_idx_elev", -1), self._refresh_elevation_panel),
+            (getattr(self, "_idx_mosaic", -1), self._refresh_mosaic_panel),
+            (getattr(self, "_idx_export", -1), self._refresh_export_panel),
+        ]
+        self._panel_refreshers = {idx: func for idx, func in refresher_pairs if idx >= 0}
+        self.tb.currentChanged.connect(self._on_panel_changed)
+        self._on_panel_changed(self.tb.currentIndex())
 
         # initial state
         self._load_setup_settings()
@@ -522,8 +601,8 @@ class HexMosaicDockWidget(
             except Exception:
                 pass
 
-        self._layers_added_slot = lambda *_: self._populate_hex_elevation_inputs()
-        self._layers_removed_slot = lambda *_: self._populate_hex_elevation_inputs()
+        self._layers_added_slot = lambda *_: (self._populate_hex_elevation_inputs(), self._populate_grid_hex_layer_inputs())
+        self._layers_removed_slot = lambda *_: (self._populate_hex_elevation_inputs(), self._populate_grid_hex_layer_inputs())
         self._config_reload_on_read = lambda *_: self._load_config()
         self._config_reload_on_cleared = lambda: self._load_config()
 
@@ -540,6 +619,7 @@ class HexMosaicDockWidget(
         self._populate_poi_combo()
         self._populate_aoi_combo()
         self._populate_hex_elevation_inputs()
+        self._populate_grid_hex_layer_inputs()
         self._refresh_elevation_styles()
         self._sync_export_aoi_combo()
         self._rebuild_export_tree()
@@ -925,6 +1005,77 @@ class HexMosaicDockWidget(
 
 
 
+
+    def _on_panel_changed(self, index: int) -> None:
+        refresher = getattr(self, "_panel_refreshers", {}).get(index)
+        if refresher:
+            try:
+                refresher()
+            except Exception as exc:
+                self.log(f"Panel refresh failed: {exc}")
+
+    def _refresh_map_area_panel(self) -> None:
+        try:
+            self._populate_aoi_combo()
+            self._populate_poi_combo()
+            self._recalc_aoi_info()
+        except Exception as exc:
+            self.log(f"Map Area refresh error: {exc}")
+
+    def _refresh_grid_panel(self) -> None:
+        try:
+            self._populate_aoi_combo()
+            self._populate_grid_hex_layer_inputs()
+            self._update_grid_source_state()
+        except Exception as exc:
+            self.log(f"Grid refresh error: {exc}")
+
+    def _refresh_elevation_panel(self) -> None:
+        try:
+            self._populate_aoi_combo()
+            self._sync_aoi_combo_to_elev()
+            self._populate_hex_elevation_inputs()
+            self._refresh_elevation_styles()
+            self._sync_elevation_step_from_config()
+            self._update_hex_elevation_button_state()
+        except Exception as exc:
+            self.log(f"Elevation refresh error: {exc}")
+
+    def _refresh_mosaic_panel(self) -> None:
+        try:
+            self._populate_layer_processing_inputs()
+        except Exception as exc:
+            self.log(f"Mosaic refresh error: {exc}")
+
+    def _toggle_grid_layer_checks(self) -> None:
+        checks = [
+            getattr(self, "chk_grid_tiles", None),
+            getattr(self, "chk_grid_edges", None),
+            getattr(self, "chk_grid_vertices", None),
+            getattr(self, "chk_grid_centroids", None),
+        ]
+        live = [c for c in checks if c is not None]
+        if not live:
+            return
+        set_on = any(not c.isChecked() for c in live)
+        for c in live:
+            c.setChecked(set_on)
+        self._update_grid_source_state()
+
+    def _update_grid_source_state(self) -> None:
+        combo = getattr(self, "cbo_grid_hex_layer", None)
+        tiles_chk = getattr(self, "chk_grid_tiles", None)
+        if combo is None or tiles_chk is None:
+            return
+        combo.setEnabled(not tiles_chk.isChecked())
+
+    def _refresh_export_panel(self) -> None:
+        try:
+            self._populate_aoi_combo()
+            self._sync_export_aoi_combo()
+            self._rebuild_export_tree()
+        except Exception as exc:
+            self.log(f"Export refresh error: {exc}")
 
     def _browse_dir(self, line_edit):
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "Select folder", line_edit.text() or os.path.expanduser("~"))

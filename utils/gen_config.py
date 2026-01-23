@@ -58,7 +58,7 @@ for _, r in df.iterrows():
 
 config = {
     "schema_version": 1,
-    "units": {"hex_size_m": 500},
+    "units": {"hex_size_m": 500, "elevation_step_m": 50},
     "thresholds": {"polygon_coverage_majority": 0.60, "min_polygon_area_hex_fraction": 0.25, "snap_tolerance_px": 20},
     "priority_order": ["Water","Urban","Industrial","Marsh","Forest","Fields","Bare","Mixed"],
     "osm_to_classes": {"polygons": [], "lines": []},   # fill per project or keep defaults

@@ -338,8 +338,42 @@ class AoiMixin:
                         layers.append(lyr)
                 except Exception:
                     continue
-        return sorted(layers, key=lambda L: L.name().lower())
+        hex_named = [lyr for lyr in layers if 'hex' in lyr.name().lower()]
+        selected = hex_named or layers
+        return sorted(selected, key=lambda L: L.name().lower())
 
+    def _populate_grid_hex_layer_inputs(self):
+        combo = getattr(self, "cbo_grid_hex_layer", None)
+        if not self._widget_is_alive(combo):
+            return
+        try:
+            layers = self._gather_hex_layers()
+            prev_id = combo.currentData() if combo.count() else None
+            prev_text = combo.currentText() if combo.count() else ""
+
+            combo.blockSignals(True)
+            combo.clear()
+            for lyr in layers:
+                combo.addItem(lyr.name(), lyr.id())
+
+            if prev_id:
+                idx = combo.findData(prev_id)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+            if combo.currentIndex() < 0 and prev_text:
+                idx = combo.findText(prev_text, Qt.MatchFixedString)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+            combo.blockSignals(False)
+        except RuntimeError:
+            return
+
+    def _selected_grid_hex_tiles_layer(self):
+        combo = getattr(self, "cbo_grid_hex_layer", None)
+        if not self._widget_is_alive(combo):
+            return None
+        lyr_id = combo.currentData() if combo.count() else None
+        return QgsProject.instance().mapLayer(lyr_id) if lyr_id else None
     def _widget_is_alive(self, widget):
         """Return False if the Qt widget reference is gone or deleted."""
         if widget is None:
@@ -931,6 +965,14 @@ class AoiMixin:
         # guards to prevent UnboundLocalError on early returns
         saved_tiles = saved_edges = saved_verts = saved_cents = False
         ix_tiles = ix_edges = ix_verts = ix_cents = False
+        gen_tiles = self.chk_grid_tiles.isChecked() if hasattr(self, "chk_grid_tiles") else True
+        gen_edges = self.chk_grid_edges.isChecked() if hasattr(self, "chk_grid_edges") else True
+        gen_verts = self.chk_grid_vertices.isChecked() if hasattr(self, "chk_grid_vertices") else True
+        gen_cents = self.chk_grid_centroids.isChecked() if hasattr(self, "chk_grid_centroids") else True
+        helpers_requested = gen_edges or gen_verts or gen_cents
+        if not any([gen_tiles, gen_edges, gen_verts, gen_cents]):
+            self.log("Generate Grid: select at least one layer to create.")
+            return
 
         # --- inputs ---
         try:
@@ -959,39 +1001,63 @@ class AoiMixin:
         base_dir = os.path.join(self._layers_dir(), "Base", "Base_Grid", aoi_safe)
         os.makedirs(base_dir, exist_ok=True)
 
-        # --- 1) raw grid (TYPE=4 is hex in your build) ---
-        params_grid = {
-            'TYPE': 4,               # 4 = Hexagon in your QGIS
-            'EXTENT': extent,        # try object first
-            'HSPACING': hex_m,
-            'VSPACING': hex_m,
-            'HOVERLAY': 0,
-            'VOVERLAY': 0,
-            'CRS': crs,
-            'OUTPUT': 'memory:hex_raw'
-        }
-        try:
-            res_grid = processing.run('native:creategrid', params_grid)
-        except Exception:
-            params_grid.update({'EXTENT': ext_str, 'CRS': crs.authid()})
-            res_grid = processing.run('native:creategrid', params_grid)
-        grid_raw = res_grid['OUTPUT']
+        source_tiles = None
+        if not gen_tiles and helpers_requested:
+            source_tiles = self._selected_grid_hex_tiles_layer()
+            if not source_tiles or not source_tiles.isValid():
+                self.log("Generate Grid: select a Hex Tiles layer to build helpers.")
+                return
+            try:
+                if QgsWkbTypes.geometryType(source_tiles.wkbType()) != QgsWkbTypes.PolygonGeometry:
+                    self.log("Generate Grid: selected Hex Tiles layer must be polygon geometry.")
+                    return
+            except Exception:
+                self.log("Generate Grid: selected Hex Tiles layer is not a polygon layer.")
+                return
+            self.log(f"Generate Grid: using existing Hex Tiles layer '{source_tiles.name()}'.")
 
-        # --- 2) clip to AOI ---
-        grid = processing.run('native:clip', {
-            'INPUT': grid_raw, 'OVERLAY': aoi, 'OUTPUT': 'memory:hex_tiles'
-        })['OUTPUT']
+        grid = None
+        if gen_tiles:
+            # --- 1) raw grid (TYPE=4 is hex in your build) ---
+            params_grid = {
+                'TYPE': 4,               # 4 = Hexagon in your QGIS
+                'EXTENT': extent,        # try object first
+                'HSPACING': hex_m,
+                'VSPACING': hex_m,
+                'HOVERLAY': 0,
+                'VOVERLAY': 0,
+                'CRS': crs,
+                'OUTPUT': 'memory:hex_raw'
+            }
+            try:
+                res_grid = processing.run('native:creategrid', params_grid)
+            except Exception:
+                params_grid.update({'EXTENT': ext_str, 'CRS': crs.authid()})
+                res_grid = processing.run('native:creategrid', params_grid)
+            grid_raw = res_grid['OUTPUT']
+
+            # --- 2) clip to AOI ---
+            grid = processing.run('native:clip', {
+                'INPUT': grid_raw, 'OVERLAY': aoi, 'OUTPUT': 'memory:hex_tiles'
+            })['OUTPUT']
+        elif source_tiles:
+            grid = source_tiles
 
         # --- 3) helpers ---
-        edges = processing.run('native:polygonstolines', {
-            'INPUT': grid, 'OUTPUT': 'memory:hex_edges'
-        })['OUTPUT']
-        vertices = processing.run('native:extractvertices', {
-            'INPUT': grid, 'OUTPUT': 'memory:hex_vertices'
-        })['OUTPUT']
-        centroids = processing.run('native:centroids', {
-            'INPUT': grid, 'ALL_PARTS': False, 'OUTPUT': 'memory:hex_centroids'
-        })['OUTPUT']
+        edges = vertices = centroids = None
+        if helpers_requested:
+            if gen_edges:
+                edges = processing.run('native:polygonstolines', {
+                    'INPUT': grid, 'OUTPUT': 'memory:hex_edges'
+                })['OUTPUT']
+            if gen_verts:
+                vertices = processing.run('native:extractvertices', {
+                    'INPUT': grid, 'OUTPUT': 'memory:hex_vertices'
+                })['OUTPUT']
+            if gen_cents:
+                centroids = processing.run('native:centroids', {
+                    'INPUT': grid, 'ALL_PARTS': False, 'OUTPUT': 'memory:hex_centroids'
+                })['OUTPUT']
 
         # --- 4) write each as Shapefile (clean sidecars first), then always try to load ---
         def _clean_sidecars(path_with_ext):
@@ -1028,35 +1094,39 @@ class AoiMixin:
         shp_verts = os.path.join(base_dir, "hex_vertices.shp")
         shp_cents = os.path.join(base_dir, "hex_centroids.shp")
 
-        saved_tiles = _save_shp(grid, shp_tiles)
-        saved_edges = _save_shp(edges, shp_edges)
-        saved_verts = _save_shp(vertices, shp_verts)
-        saved_cents = _save_shp(centroids, shp_cents)    
+        if gen_tiles and grid is not None:
+            saved_tiles = _save_shp(grid, shp_tiles)
+        if gen_edges and edges is not None:
+            saved_edges = _save_shp(edges, shp_edges)
+        if gen_verts and vertices is not None:
+            saved_verts = _save_shp(vertices, shp_verts)
+        if gen_cents and centroids is not None:
+            saved_cents = _save_shp(centroids, shp_cents)
 
         # --- 4b) build spatial indexes (.qix) for faster rendering/snapping ---
         ix_tiles = self._create_spatial_index(shp_tiles) if saved_tiles else False
         ix_edges = self._create_spatial_index(shp_edges) if saved_edges else False
         ix_verts = self._create_spatial_index(shp_verts) if saved_verts else False
-        ix_cents = self._create_spatial_index(shp_cents) if saved_cents else False            
+        ix_cents = self._create_spatial_index(shp_cents) if saved_cents else False
 
         # --- 5) load disk layers regardless of return codes; style them; add to project ---
         def _load(path, title):
             lyr = QgsVectorLayer(path, title, "ogr")
             return lyr if lyr.isValid() else None
 
-        L_grid = _load(shp_tiles, f'Hex Tiles ({int(hex_m)} m)')
-        L_edge = _load(shp_edges, "Hex Grid Edges")
-        L_vert = _load(shp_verts, "Intersection Helpers")
-        L_cent = _load(shp_cents, "Centroid Helpers")
+        L_grid = _load(shp_tiles, f'Hex Tiles ({int(hex_m)} m)') if gen_tiles and saved_tiles else None
+        L_edge = _load(shp_edges, "Hex Grid Edges") if gen_edges and saved_edges else None
+        L_vert = _load(shp_verts, "Intersection Helpers") if gen_verts and saved_verts else None
+        L_cent = _load(shp_cents, "Centroid Helpers") if gen_cents and saved_cents else None
 
         # If any failed to load, tell the user which ones, but continue with those that did
         missing = []
-        if not L_grid: missing.append("tiles")
-        if not L_edge: missing.append("edges")
-        if not L_vert: missing.append("vertices")
-        if not L_cent: missing.append("centroids")
+        if gen_tiles and not L_grid: missing.append("tiles")
+        if gen_edges and not L_edge: missing.append("edges")
+        if gen_verts and not L_vert: missing.append("vertices")
+        if gen_cents and not L_cent: missing.append("centroids")
 
-        if all([L_grid, L_edge, L_vert, L_cent]):
+        if not missing:
             status_suffix = "All shapefiles saved & loaded."
         else:
             status_suffix = "Loaded with issues: missing " + ", ".join(missing)
@@ -1090,12 +1160,27 @@ class AoiMixin:
 
         if L_grid:
             iface.mapCanvas().setExtent(L_grid.extent())
+        elif L_edge:
+            iface.mapCanvas().setExtent(L_edge.extent())
+        elif L_vert:
+            iface.mapCanvas().setExtent(L_vert.extent())
+        elif L_cent:
+            iface.mapCanvas().setExtent(L_cent.extent())
         elif aoi:
             iface.mapCanvas().setExtent(aoi.extent())
         iface.mapCanvas().refresh()
 
-        ix_ok = all([ix_tiles, ix_edges, ix_verts, ix_cents])
+        ix_flags = []
+        if gen_tiles and saved_tiles:
+            ix_flags.append(ix_tiles)
+        if gen_edges and saved_edges:
+            ix_flags.append(ix_edges)
+        if gen_verts and saved_verts:
+            ix_flags.append(ix_verts)
+        if gen_cents and saved_cents:
+            ix_flags.append(ix_cents)
+        ix_ok = all(ix_flags) if ix_flags else True
         self.log(
-            f"Hex grid + helpers saved to {os.path.relpath(base_dir, out_root)} and loaded permanently. "
+            f"Hex grid outputs saved to {os.path.relpath(base_dir, out_root)} and loaded permanently. "
             + ("Spatial indexes built." if ix_ok else "Spatial indexes built where possible.")
         )

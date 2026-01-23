@@ -37,7 +37,9 @@ class ProjectPathsMixin:
         return os.path.expanduser("~")
 
     def _layers_dir(self) -> str:
-        return os.path.join(self._project_root(), "Layers")
+        directory = os.path.join(self._project_root(), "Layers")
+        os.makedirs(directory, exist_ok=True)
+        return directory
 
     def _export_dir(self) -> str:
         """Export root always lives in <project root>/Export (capital E)."""

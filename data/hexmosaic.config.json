@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
   "units": {
-    "hex_size_m": 500
+    "hex_size_m": 500,
+    "elevation_step_m": 50
   },
   "thresholds": {
     "polygon_coverage_majority": 0.6,

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -17,9 +18,13 @@ from qgis.core import (
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
     QgsDistanceArea,
+    QgsColorRampShader,
+    QgsGraduatedSymbolRenderer,
     QgsMapLayerStyle,
     QgsProject,
     QgsRasterLayer,
+    QgsRendererRange,
+    QgsSingleBandPseudoColorRenderer,
     QgsUnitTypes,
     QgsVectorLayer,
 )
@@ -32,6 +37,105 @@ from ..utils.elevation_hex import (
 
 
 class ElevationMixin:
+    _DEFAULT_ELEV_STEP_M = 50.0
+
+    def _elevation_step_m(self) -> float:
+        spin = getattr(self, "spin_elev_step", None)
+        if self._widget_is_alive(spin):
+            try:
+                value = float(spin.value())
+                if value > 0:
+                    return value
+            except Exception:
+                pass
+        cfg = getattr(self, "cfg", {}) if hasattr(self, "cfg") else {}
+        if isinstance(cfg, dict):
+            units = cfg.get("units", {})
+            if isinstance(units, dict):
+                try:
+                    value = float(units.get("elevation_step_m", self._DEFAULT_ELEV_STEP_M))
+                    if value > 0:
+                        return value
+                except Exception:
+                    pass
+        return self._DEFAULT_ELEV_STEP_M
+
+    def _sync_elevation_step_from_config(self) -> None:
+        spin = getattr(self, "spin_elev_step", None)
+        if not self._widget_is_alive(spin):
+            return
+        cfg = getattr(self, "cfg", {}) if hasattr(self, "cfg") else {}
+        value = self._DEFAULT_ELEV_STEP_M
+        if isinstance(cfg, dict):
+            units = cfg.get("units", {})
+            if isinstance(units, dict):
+                try:
+                    value = float(units.get("elevation_step_m", value))
+                except Exception:
+                    value = self._DEFAULT_ELEV_STEP_M
+        if value <= 0:
+            value = self._DEFAULT_ELEV_STEP_M
+        try:
+            self._elev_step_sync = True
+            spin.blockSignals(True)
+            spin.setValue(value)
+        finally:
+            spin.blockSignals(False)
+            self._elev_step_sync = False
+
+    def _persist_elevation_step_to_config(self, value: float) -> None:
+        path = getattr(self, "cfg_path", "") or ""
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                cfg = json.load(handle)
+        except Exception as exc:
+            self.log(f"Elevation step: could not read config to save ({exc}).")
+            return
+        if not isinstance(cfg, dict):
+            self.log("Elevation step: config is not a JSON object.")
+            return
+        units = cfg.get("units")
+        if not isinstance(units, dict):
+            units = {}
+            cfg["units"] = units
+        units["elevation_step_m"] = float(value)
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(cfg, handle, indent=2)
+            self.cfg = cfg
+            self.log(f"Elevation step saved to config: {value:g} m.")
+        except Exception as exc:
+            self.log(f"Elevation step: failed to write config ({exc}).")
+
+    def _on_elevation_step_changed(self, value: float) -> None:
+        if getattr(self, "_elev_step_sync", False):
+            return
+        step = float(value) if value else self._DEFAULT_ELEV_STEP_M
+        if step <= 0:
+            return
+        self._persist_elevation_step_to_config(step)
+        if getattr(self, "elev_path_edit", None) and self.elev_path_edit.text().strip():
+            self._apply_style_to_existing_dem()
+        else:
+            dem_layer = self._selected_hex_dem_layer()
+            if dem_layer and dem_layer.isValid():
+                qml_used = self._apply_best_elevation_style(dem_layer)
+                if not qml_used:
+                    qml_path = self.elev_style_combo.currentData()
+                    if qml_path and os.path.isfile(qml_path):
+                        ok, _ = dem_layer.loadNamedStyle(qml_path)
+                        if ok:
+                            step_val = self._elevation_step_m()
+                            _min_val, base = self._elevation_min_and_base(dem_layer, step_val)
+                            if base is not None:
+                                self._apply_raster_elevation_step(dem_layer, base, step_val)
+                                self._set_elevation_style_metadata(dem_layer, base, step_val)
+                            self._select_style_in_combo(qml_path)
+                            self.log(f"Applied style: {os.path.basename(qml_path)}")
+        self._reapply_hex_elevation_styles()
+
     def _refresh_elevation_styles(self):
         self.elev_style_combo.clear()
         styles_dir = self.styles_dir_edit.text().strip()
@@ -43,6 +147,134 @@ class ElevationMixin:
         qmls = [f for f in os.listdir(elev_dir) if f.lower().endswith(".qml")]
         for q in sorted(qmls):
             self.elev_style_combo.addItem(q, os.path.join(elev_dir, q))
+
+    def _elevation_min_and_base(self, raster_layer: QgsRasterLayer, step: float):
+        prov = raster_layer.dataProvider()
+        stats = prov.bandStatistics(1)
+        min_val = getattr(stats, "minimumValue", None)
+        if min_val is None or math.isinf(min_val) or math.isnan(min_val):
+            from qgis.core import QgsRasterBandStats
+            stats = prov.bandStatistics(1, QgsRasterBandStats.All)
+            min_val = stats.minimumValue
+        if min_val is None or math.isinf(min_val) or math.isnan(min_val):
+            return None, None
+        step_val = step if step > 0 else self._DEFAULT_ELEV_STEP_M
+        base = math.floor(float(min_val) / step_val) * step_val
+        return min_val, base
+
+    def _apply_raster_elevation_step(self, raster_layer: QgsRasterLayer, base: float, step: float) -> bool:
+        renderer = raster_layer.renderer() if raster_layer else None
+        if not isinstance(renderer, QgsSingleBandPseudoColorRenderer):
+            return False
+        shader = renderer.shader()
+        func = shader.rasterShaderFunction() if shader else None
+        if not isinstance(func, QgsColorRampShader):
+            return False
+        items = func.colorRampItemList()
+        if not items:
+            return False
+        new_items = []
+        for idx, item in enumerate(items):
+            if idx < len(items) - 1:
+                value = base + idx * step
+            else:
+                value = item.value
+                if value <= base:
+                    value = base + idx * step
+            new_items.append(QgsColorRampShader.ColorRampItem(value, item.color, item.label))
+        func.setColorRampItemList(new_items)
+        func.setColorRampType(QgsColorRampShader.Discrete)
+        raster_layer.triggerRepaint()
+        return True
+
+    def _set_elevation_style_metadata(self, layer, base: float, step: float) -> None:
+        try:
+            layer.setCustomProperty("hexmosaic/elev_base_m", float(base))
+            layer.setCustomProperty("hexmosaic/elev_step_m", float(step))
+        except Exception:
+            pass
+
+    def _apply_hex_elevation_style_to_layer(self, hex_layer: QgsVectorLayer, base: float, step: float) -> bool:
+        if not hex_layer or not hex_layer.isValid():
+            return False
+        if not math.isfinite(base) or step <= 0:
+            return False
+        if not self._apply_style(hex_layer, "elevation_hex.qml"):
+            return False
+        renderer = hex_layer.renderer()
+        if not isinstance(renderer, QgsGraduatedSymbolRenderer):
+            return False
+        ranges = renderer.ranges()
+        if not ranges:
+            return False
+        field_name = "elev_bucket"
+        if hex_layer.fields().indexOf(field_name) < 0:
+            field_name = "elev_bucke"
+        renderer.setClassAttribute(field_name)
+        orig_step = None
+        if len(ranges) >= 2:
+            try:
+                orig_step = float(ranges[1].upper() - ranges[1].lower())
+            except Exception:
+                orig_step = None
+        ratio = 2.0
+        if orig_step and orig_step > 0:
+            try:
+                ratio = float(ranges[0].upper() - ranges[0].lower()) / orig_step
+            except Exception:
+                ratio = 2.0
+        new_ranges = []
+        for idx, r in enumerate(ranges):
+            symbol = r.symbol().clone()
+            if idx == 0:
+                upper = base
+                lower = base - (ratio * step)
+            else:
+                lower = base + (idx - 1) * step
+                upper = base + idx * step
+            label = f"{lower:g} - {upper:g}"
+            new_ranges.append(QgsRendererRange(lower, upper, symbol, label))
+        if hasattr(renderer, "setRanges"):
+            renderer.setRanges(new_ranges)
+        else:
+            renderer.updateRangeList(new_ranges)
+        hex_layer.triggerRepaint()
+        self._set_elevation_style_metadata(hex_layer, base, step)
+        return True
+
+    def _find_dem_layer_for_tag(self, tag: str):
+        if not tag:
+            return None
+        tag_norm = os.path.normcase(str(tag))
+        for lyr in QgsProject.instance().mapLayers().values():
+            if isinstance(lyr, QgsRasterLayer):
+                src = os.path.basename(lyr.source() or "") or lyr.name()
+                if os.path.normcase(src) == tag_norm or os.path.normcase(lyr.name()) == tag_norm:
+                    return lyr
+        return None
+
+    def _reapply_hex_elevation_styles(self) -> None:
+        dem_layer = self._selected_hex_dem_layer()
+        step = self._elevation_step_m()
+        if dem_layer and dem_layer.isValid():
+            _, base = self._elevation_min_and_base(dem_layer, step)
+        else:
+            base = None
+        for lyr in QgsProject.instance().mapLayers().values():
+            if not isinstance(lyr, QgsVectorLayer):
+                continue
+            if lyr.fields().indexOf("elev_bucket") < 0 and lyr.fields().indexOf("elev_bucke") < 0:
+                continue
+            dem_source = lyr.customProperty("hexmosaic/dem_source", "")
+            dem_match = self._find_dem_layer_for_tag(dem_source) if dem_source else None
+            use_dem = dem_match or dem_layer
+            if use_dem and use_dem.isValid():
+                _, layer_base = self._elevation_min_and_base(use_dem, step)
+            else:
+                layer_base = base
+            if layer_base is None:
+                continue
+            self._apply_hex_elevation_style_to_layer(lyr, layer_base, step)
 
     def _estimate_aoi_area_km2(self, aoi_layer):
         """Approximate AOI area in square kilometres (returns None if unavailable)."""
@@ -108,25 +340,23 @@ class ElevationMixin:
 
     def _apply_best_elevation_style(self, raster_layer: QgsRasterLayer):
         """
-        Apply the best elevation style based on min elevation -> base 50.
+        Apply the best elevation style based on min elevation and configured step.
         Returns the full QML path applied, or None if nothing applied.
         """
         if not raster_layer or not raster_layer.isValid():
             return None
 
-        prov = raster_layer.dataProvider()
-        stats = prov.bandStatistics(1)
-        min_val = getattr(stats, "minimumValue", None)
-        if min_val is None or math.isinf(min_val) or math.isnan(min_val):
-            from qgis.core import QgsRasterBandStats
-            stats = prov.bandStatistics(1, QgsRasterBandStats.All)
-            min_val = stats.minimumValue
-
-        if min_val is None:
+        step = self._elevation_step_m()
+        min_val, base = self._elevation_min_and_base(raster_layer, step)
+        if min_val is None or base is None:
             self.log("Elevation: could not read minimum elevation; leaving default style.")
             return None
-
-        base = int(math.floor(float(min_val) / 50.0) * 50)
+        if not math.isfinite(base):
+            self.log("Elevation: minimum elevation was not finite; leaving default style.")
+            return None
+        base_key = None
+        if math.isclose(base, round(base), abs_tol=1e-6):
+            base_key = int(round(base))
 
         elev_dir = self._styles_elevation_dir()
         if not elev_dir or not os.path.isdir(elev_dir):
@@ -142,14 +372,24 @@ class ElevationMixin:
                     break
             try:
                 return int(num)
-            except:
+            except Exception:
                 return None
+
+        def _base_from_style_filename(path: str):
+            fn = os.path.basename(path)
+            match = re.search(r"style_(-?\d+)", fn)
+            if match:
+                try:
+                    return int(match.group(1))
+                except Exception:
+                    pass
+            return _leading_int(path)
 
         candidates = [os.path.join(elev_dir, f) for f in os.listdir(elev_dir) if f.lower().endswith(".qml")]
         chosen = None
         for qml in candidates:
-            n = _leading_int(qml)
-            if n is not None and n == base:
+            n = _base_from_style_filename(qml)
+            if base_key is not None and n is not None and n == base_key:
                 chosen = qml
                 break
 
@@ -158,6 +398,9 @@ class ElevationMixin:
             return None
 
         ok, _ = raster_layer.loadNamedStyle(chosen)
+        if ok:
+            self._apply_raster_elevation_step(raster_layer, base, step)
+            self._set_elevation_style_metadata(raster_layer, base, step)
         raster_layer.triggerRepaint()
         if ok:
             self.log(f"Applied elevation style: {os.path.basename(chosen)} (min={min_val:.1f} -> base={base})")
@@ -189,7 +432,13 @@ class ElevationMixin:
         if not qml_used:
             qml_path = self.elev_style_combo.currentData()
             if qml_path and os.path.isfile(qml_path):
-                _ok, _ = rl.loadNamedStyle(qml_path)
+                ok, _ = rl.loadNamedStyle(qml_path)
+                if ok:
+                    step = self._elevation_step_m()
+                    _min_val, base = self._elevation_min_and_base(rl, step)
+                    if base is not None:
+                        self._apply_raster_elevation_step(rl, base, step)
+                        self._set_elevation_style_metadata(rl, base, step)
                 rl.triggerRepaint()
 
         proj = QgsProject.instance()
@@ -252,6 +501,11 @@ class ElevationMixin:
             if qml_path and os.path.isfile(qml_path):
                 ok, _ = target.loadNamedStyle(qml_path); target.triggerRepaint()
                 if ok:
+                    step = self._elevation_step_m()
+                    _min_val, base = self._elevation_min_and_base(target, step)
+                    if base is not None:
+                        self._apply_raster_elevation_step(target, base, step)
+                        self._set_elevation_style_metadata(target, base, step)
                     self._select_style_in_combo(qml_path)
                     self.log(f"Applied style: {os.path.basename(qml_path)}")
                 else:
@@ -281,6 +535,21 @@ class ElevationMixin:
         base_layer = self._selected_aoi_layer_for_elev() or self._selected_aoi_layer()
         base_name = base_layer.name() if base_layer else hex_layer.name()
         shp_path = self._hex_elevation_output_path(base_name)
+        shp_dir = os.path.normpath(os.path.dirname(shp_path))
+        if not shp_dir:
+            self.log("Hex elevation: output directory could not be resolved.")
+            return
+        if os.path.isfile(shp_dir):
+            self.log(f"Hex elevation: output directory is a file: {shp_dir}")
+            return
+        try:
+            os.makedirs(shp_dir, exist_ok=True)
+        except Exception as exc:
+            self.log(f"Hex elevation: could not create output directory '{shp_dir}' ({exc}).")
+            return
+        if not os.path.isdir(shp_dir):
+            self.log(f"Hex elevation: output directory is missing or invalid: {shp_dir}")
+            return
 
         if os.path.exists(shp_path) and not overwrite:
             self.log("Hex elevation: output exists. Enable overwrite to regenerate.")
@@ -344,11 +613,24 @@ class ElevationMixin:
             style = QgsMapLayerStyle()
             if style.readFromLayer(dem_layer):
                 styled = bool(style.apply(new_layer))
-        except Exception:
+        except Exception as exc:
             styled = False
+            self.log(f"Hex elevation: failed to copy DEM style ({exc}).")
 
         if not styled:
-            styled = self._apply_style(new_layer, "elevation_hex.qml")
+            try:
+                styled = self._apply_style(new_layer, "elevation_hex.qml")
+            except Exception as exc:
+                styled = False
+                self.log(f"Hex elevation: failed to apply elevation_hex.qml ({exc}).")
+
+        step = self._elevation_step_m()
+        _min_val, base = self._elevation_min_and_base(dem_layer, step)
+        if base is not None:
+            try:
+                styled = self._apply_hex_elevation_style_to_layer(new_layer, base, step) or styled
+            except Exception as exc:
+                self.log(f"Hex elevation: failed to tune style ranges ({exc}).")
 
         if styled:
             new_layer.triggerRepaint()
@@ -366,8 +648,16 @@ class ElevationMixin:
         if existing:
             proj.removeMapLayers(existing)
 
-        proj.addMapLayer(new_layer, False)
-        target_group.addLayer(new_layer)
+        try:
+            proj.addMapLayer(new_layer, False)
+            if target_group is not None:
+                target_group.addLayer(new_layer)
+            else:
+                proj.addMapLayer(new_layer)
+                self.log("Hex elevation: target group missing; added layer at root.")
+        except Exception as exc:
+            self.log(f"Hex elevation: failed to add layer to project ({exc}).")
+            return
 
         elapsed = time.time() - start
         summary = format_sampling_summary(result)

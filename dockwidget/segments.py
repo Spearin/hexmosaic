@@ -43,11 +43,6 @@ class SegmentationMixin:
             self._tile_scale_lookup = lookup
         return self._tile_scale_lookup
 
-    def _segment_mode(self):
-        if hasattr(self, "seg_mode_tabs") and self.seg_mode_tabs.currentIndex() == 1:
-            return "map_tile"
-        return "equal"
-
     def _current_map_tile_settings(self):
         scale_key = None
         scale_label = ""
@@ -80,19 +75,41 @@ class SegmentationMixin:
             if unit_data:
                 offsets["unit"] = unit_data
 
+        equal_offsets = {"ns": 0.0, "ew": 0.0, "unit": "km"}
+        if hasattr(self, "equal_offset_ns_spin"):
+            equal_offsets["ns"] = float(self.equal_offset_ns_spin.value())
+        if hasattr(self, "equal_offset_ew_spin"):
+            equal_offsets["ew"] = float(self.equal_offset_ew_spin.value())
+
         return {
             "scale_key": scale_key,
             "scale_label": scale_label,
             "width_km": width_km,
             "alignment": alignment,
             "offsets": offsets,
+            "equal_offsets": equal_offsets,
         }
+
+    def _current_equal_offsets(self):
+        offsets = {"ns": 0.0, "ew": 0.0, "unit": "km"}
+        if hasattr(self, "equal_offset_ns_spin"):
+            offsets["ns"] = float(self.equal_offset_ns_spin.value())
+        if hasattr(self, "equal_offset_ew_spin"):
+            offsets["ew"] = float(self.equal_offset_ew_spin.value())
+        return offsets
+
+    def _segment_mode(self):
+        if hasattr(self, "seg_mode_tabs") and self.seg_mode_tabs.currentWidget() is not None:
+            idx = self.seg_mode_tabs.currentIndex()
+            if idx == 0:
+                return "equal"
+        return "map_tile"
 
     def _update_map_tile_controls_state(self):
         if not hasattr(self, "tile_alignment_combo"):
             return
         alignment = self.tile_alignment_combo.currentData()
-        enable_offsets = alignment not in (None, "extent")
+        enable_offsets = alignment is not None
         for widget in (getattr(self, "tile_offset_ns_spin", None), getattr(self, "tile_offset_ew_spin", None), getattr(self, "tile_offset_unit_combo", None)):
             if widget is not None:
                 widget.setEnabled(enable_offsets)
@@ -123,6 +140,21 @@ class SegmentationMixin:
         units = max(1, math.ceil(value / increment - 1e-9))
         return units * increment
 
+    def _map_tile_offsets_in_units(self, offsets, map_units):
+        ns = float(offsets.get('ns', 0.0))
+        ew = float(offsets.get('ew', 0.0))
+        unit = offsets.get('unit', 'km')
+        if unit == 'arcmin':
+            ns_m = ns * 1852.0
+            ew_m = ew * 1852.0
+        else:
+            ns_m = ns * 1000.0
+            ew_m = ew * 1000.0
+        return (
+            self._convert_meters_to_map_units(ns_m, map_units),
+            self._convert_meters_to_map_units(ew_m, map_units),
+        )
+
     def _map_tile_offsets_in_degrees(self, offsets, meters_per_deg_lat, meters_per_deg_lon):
         ns = float(offsets.get("ns", 0.0))
         ew = float(offsets.get("ew", 0.0))
@@ -150,7 +182,7 @@ class SegmentationMixin:
         offsets = settings.get("offsets", {"ns": 0.0, "ew": 0.0, "unit": "km"})
 
         if alignment == "extent":
-            result, err = self._prepare_map_tile_cells_extent(parent_layer, aoi_geom, tile_width_m, settings.get("scale_key"))
+            result, err = self._prepare_map_tile_cells_extent(parent_layer, aoi_geom, tile_width_m, offsets, settings.get("scale_key"))
         else:
             result, err = self._prepare_map_tile_cells_geographic(parent_layer, aoi_geom, tile_width_m, alignment, offsets, settings.get("scale_key"))
         if err:
@@ -169,7 +201,7 @@ class SegmentationMixin:
         result.setdefault("subdir", subdir_default)
         return result, None
 
-    def _prepare_map_tile_cells_extent(self, parent_layer, aoi_geom, tile_width_m, scale_key):
+    def _prepare_map_tile_cells_extent(self, parent_layer, aoi_geom, tile_width_m, offsets, scale_key):
         map_units = parent_layer.crs().mapUnits()
         tile_width_units = self._convert_meters_to_map_units(tile_width_m, map_units)
         if tile_width_units <= 0:
@@ -179,10 +211,12 @@ class SegmentationMixin:
         xmin, xmax = extent.xMinimum(), extent.xMaximum()
         ymin, ymax = extent.yMinimum(), extent.yMaximum()
 
-        grid_min_x = math.floor(xmin / tile_width_units) * tile_width_units
-        grid_max_x = math.ceil(xmax / tile_width_units) * tile_width_units
-        grid_min_y = math.floor(ymin / tile_width_units) * tile_width_units
-        grid_max_y = math.ceil(ymax / tile_width_units) * tile_width_units
+        offset_ns_units, offset_ew_units = self._map_tile_offsets_in_units(offsets, map_units) if offsets else (0.0, 0.0)
+
+        grid_min_x = math.floor((xmin - offset_ew_units) / tile_width_units) * tile_width_units + offset_ew_units
+        grid_max_x = math.ceil((xmax - offset_ew_units) / tile_width_units) * tile_width_units + offset_ew_units
+        grid_min_y = math.floor((ymin - offset_ns_units) / tile_width_units) * tile_width_units + offset_ns_units
+        grid_max_y = math.ceil((ymax - offset_ns_units) / tile_width_units) * tile_width_units + offset_ns_units
 
         cols = max(1, int(math.ceil((grid_max_x - grid_min_x) / tile_width_units)))
         rows = max(1, int(math.ceil((grid_max_y - grid_min_y) / tile_width_units)))
@@ -400,8 +434,10 @@ class SegmentationMixin:
                 proj.removeMapLayer(lyr.id())
         self._segment_preview_layers.clear()
 
-    def _remove_segment_layers(self, parent_layer):
-        seg_dir = self._segment_directory_for_layer(parent_layer)
+    def _remove_segment_layers(self, parent_layer, seg_dir=None):
+        if seg_dir is None:
+            seg_dir = self._segment_directory_for_layer(parent_layer)
+        seg_dir = seg_dir or self._segment_directory_for_layer(parent_layer)
         seg_dir_abs = os.path.abspath(seg_dir)
         proj = QgsProject.instance()
         to_remove = []
@@ -435,22 +471,29 @@ class SegmentationMixin:
             hex_m = 500.0
             self.hex_scale_edit.setText("500")
 
+        rows_input = max(1, int(self.seg_rows_spin.value())) if hasattr(self, "seg_rows_spin") else 1
+        cols_input = max(1, int(self.seg_cols_spin.value())) if hasattr(self, "seg_cols_spin") else 1
+
         if mode == "map_tile":
             result, err = self._prepare_map_tile_cells(parent_layer, hex_m)
         else:
-            rows = max(1, int(self.seg_rows_spin.value())) if hasattr(self, "seg_rows_spin") else 1
-            cols = max(1, int(self.seg_cols_spin.value())) if hasattr(self, "seg_cols_spin") else 1
-            result, err = self._prepare_segment_cells(parent_layer, rows, cols, hex_m)
+            equal_offsets = self._current_equal_offsets()
+            result, err = self._prepare_segment_cells(parent_layer, rows_input, cols_input, hex_m, equal_offsets)
         if err:
+            self._remove_segment_preview(parent_layer)
             self.log(err)
             return
 
-        cells = result.get("cells", []) if result else []
+        result = result or {}
+        self._remove_segment_preview(parent_layer)
+
+        cells = result.get("cells", [])
         if not cells:
             self.log("No segments were computed for preview.")
             return
 
-        self._remove_segment_preview(parent_layer)
+        if mode == "equal":
+            self._log_equal_grid_adjustments(result, context="preview")
 
         crs = parent_layer.crs()
         mem_layer = QgsVectorLayer(f"MultiPolygon?crs={crs.authid()}", f"{parent_layer.name()} - Segment Preview", "memory")
@@ -493,7 +536,7 @@ class SegmentationMixin:
         label = "map tiles" if self._segment_mode() == "map_tile" else "segments"
         self.log(f"Previewed {len(features)} {label} for {parent_layer.name()}.")
 
-    def _prepare_segment_cells(self, parent_layer, rows, cols, hex_m):
+    def _prepare_segment_cells(self, parent_layer, rows, cols, hex_m, equal_offsets=None):
         geoms = [feat.geometry() for feat in parent_layer.getFeatures()]
         if not geoms:
             return None, "Selected AOI has no geometry to segment."
@@ -506,61 +549,81 @@ class SegmentationMixin:
         xmin, xmax = extent.xMinimum(), extent.xMaximum()
         ymin, ymax = extent.yMinimum(), extent.yMaximum()
 
-        grid_min_x = math.floor(xmin / hex_m) * hex_m
-        grid_max_x = math.ceil(xmax / hex_m) * hex_m
-        grid_min_y = math.floor(ymin / hex_m) * hex_m
-        grid_max_y = math.ceil(ymax / hex_m) * hex_m
+        map_units = parent_layer.crs().mapUnits()
+        requested_rows = max(1, rows)
+        requested_cols = max(1, cols)
 
-        width_cells = max(cols, int(math.ceil((grid_max_x - grid_min_x) / hex_m)))
-        if width_cells % cols != 0:
-            width_cells = int(math.ceil(width_cells / cols) * cols)
-            grid_max_x = grid_min_x + width_cells * hex_m
+        width_units = xmax - xmin
+        height_units = ymax - ymin
 
-        height_cells = max(rows, int(math.ceil((grid_max_y - grid_min_y) / hex_m)))
-        if height_cells % rows != 0:
-            height_cells = int(math.ceil(height_cells / rows) * rows)
-            grid_max_y = grid_min_y + height_cells * hex_m
+        hex_step_units = self._convert_meters_to_map_units(hex_m, map_units) if hex_m else 0.0
+        if hex_step_units < 0:
+            hex_step_units = 0.0
 
-        step_x = (grid_max_x - grid_min_x) / cols if cols else 0
-        step_y = (grid_max_y - grid_min_y) / rows if rows else 0
+        cell_width_units = width_units / requested_cols if requested_cols and width_units > 0 else 0.0
+        cell_height_units = height_units / requested_rows if requested_rows and height_units > 0 else 0.0
+        if cell_width_units <= 0.0:
+            cell_width_units = hex_step_units if hex_step_units > 0 else width_units or 1.0
+        if cell_height_units <= 0.0:
+            cell_height_units = hex_step_units if hex_step_units > 0 else height_units or 1.0
 
-        x_edges = [grid_min_x + i * step_x for i in range(cols + 1)] if cols else []
-        y_edges = [grid_min_y + j * step_y for j in range(rows + 1)] if rows else []
+        offset_ns_units = 0.0
+        offset_ew_units = 0.0
+        if equal_offsets:
+            unit = equal_offsets.get("unit", "km")
+            ns_val = float(equal_offsets.get("ns", 0.0))
+            ew_val = float(equal_offsets.get("ew", 0.0))
+            if unit == "arcmin":
+                ns_m = ns_val * 1852.0
+                ew_m = ew_val * 1852.0
+            else:
+                ns_m = ns_val * 1000.0
+                ew_m = ew_val * 1000.0
+            offset_ns_units = self._convert_meters_to_map_units(ns_m, map_units)
+            offset_ew_units = self._convert_meters_to_map_units(ew_m, map_units)
 
-        cells = []
-        feature_id = 1
-        for row_index in range(rows):
-            row_num = row_index + 1
-            ymin_seg = y_edges[rows - (row_index + 1)]
-            ymax_seg = y_edges[rows - row_index]
-            for col_index in range(cols):
-                col_num = col_index + 1
-                xmin_seg = x_edges[col_index]
-                xmax_seg = x_edges[col_index + 1]
+        if cell_width_units > 0:
+            grid_min_x = math.floor((xmin - offset_ew_units) / cell_width_units) * cell_width_units + offset_ew_units
+            grid_max_x = math.ceil((xmax - offset_ew_units) / cell_width_units) * cell_width_units + offset_ew_units
+        else:
+            grid_min_x = xmin
+            grid_max_x = xmax
 
-                rect_geom = QgsGeometry.fromPolygonXY([[
-                    QgsPointXY(xmin_seg, ymin_seg),
-                    QgsPointXY(xmin_seg, ymax_seg),
-                    QgsPointXY(xmax_seg, ymax_seg),
-                    QgsPointXY(xmax_seg, ymin_seg)
-                ]])
+        if cell_height_units > 0:
+            grid_min_y = math.floor((ymin - offset_ns_units) / cell_height_units) * cell_height_units + offset_ns_units
+            grid_max_y = math.ceil((ymax - offset_ns_units) / cell_height_units) * cell_height_units + offset_ns_units
+        else:
+            grid_min_y = ymin
+            grid_max_y = ymax
 
-                seg_geom = aoi_geom.intersection(rect_geom)
-                if seg_geom.isEmpty():
-                    continue
+        span_x = max(grid_max_x - grid_min_x, cell_width_units)
+        span_y = max(grid_max_y - grid_min_y, cell_height_units)
 
-                seg_geom = seg_geom.makeValid()
-                if seg_geom.isEmpty():
-                    continue
-                seg_geom.convertToMultiType()
+        cols_effective = requested_cols
+        if cell_width_units > 0:
+            cols_effective = max(requested_cols, int(math.ceil(span_x / cell_width_units - 1e-9)))
+            span_x = cols_effective * cell_width_units
+            grid_max_x = grid_min_x + span_x
+        cols_effective = max(1, cols_effective)
 
-                cells.append({
-                    "id": feature_id,
-                    "row": row_num,
-                    "col": col_num,
-                    "geometry": seg_geom,
-                })
-                feature_id += 1
+        rows_effective = requested_rows
+        if cell_height_units > 0:
+            rows_effective = max(requested_rows, int(math.ceil(span_y / cell_height_units - 1e-9)))
+            span_y = rows_effective * cell_height_units
+            grid_max_y = grid_min_y + span_y
+        rows_effective = max(1, rows_effective)
+
+        step_x = span_x / cols_effective if cols_effective else 0.0
+        step_y = span_y / rows_effective if rows_effective else 0.0
+
+        x_edges = [grid_min_x + i * step_x for i in range(cols_effective + 1)]
+        y_edges = [grid_min_y + j * step_y for j in range(rows_effective + 1)]
+        if x_edges:
+            x_edges[-1] = grid_max_x
+        if y_edges:
+            y_edges[-1] = grid_max_y
+
+        cells = self._build_cells_from_edges(aoi_geom, x_edges, y_edges)
 
         info = {
             "cells": cells,
@@ -571,8 +634,32 @@ class SegmentationMixin:
             "grid_max_y": grid_max_y,
             "step_x": step_x,
             "step_y": step_y,
+            "rows": rows_effective,
+            "cols": cols_effective,
+            "requested_rows": requested_rows,
+            "requested_cols": requested_cols,
+            "equal_offsets": equal_offsets,
+            "offset_ns_units": offset_ns_units,
+            "offset_ew_units": offset_ew_units,
         }
         return info, None
+
+    def _log_equal_grid_adjustments(self, result, context="preview"):
+        if not result:
+            return
+        requested_rows = int(result.get("requested_rows") or 0)
+        requested_cols = int(result.get("requested_cols") or 0)
+        actual_rows = int(result.get("rows") or 0)
+        actual_cols = int(result.get("cols") or 0)
+        adjustments = []
+        if requested_rows and actual_rows and actual_rows != requested_rows:
+            adjustments.append(f"rows {requested_rows}->{actual_rows}")
+        if requested_cols and actual_cols and actual_cols != requested_cols:
+            adjustments.append(f"columns {requested_cols}->{actual_cols}")
+        if not adjustments:
+            return
+        prefix = "Preview" if context == "preview" else "Segments"
+        self.log(f"{prefix}: offsets expanded {', '.join(adjustments)} to keep the AOI covered.")
 
     def segment_selected_aoi(self):
         parent_layer = self._selected_aoi_layer_for_segmentation()
@@ -590,41 +677,54 @@ class SegmentationMixin:
         base_seg_dir = self._segment_directory_for_layer(parent_layer)
         os.makedirs(base_seg_dir, exist_ok=True)
 
+        rows_input = max(1, int(self.seg_rows_spin.value())) if hasattr(self, 'seg_rows_spin') else 1
+        cols_input = max(1, int(self.seg_cols_spin.value())) if hasattr(self, 'seg_cols_spin') else 1
+
         if mode == 'map_tile':
             result, err = self._prepare_map_tile_cells(parent_layer, hex_m)
         else:
-            rows = max(1, int(self.seg_rows_spin.value())) if hasattr(self, 'seg_rows_spin') else 1
-            cols = max(1, int(self.seg_cols_spin.value())) if hasattr(self, 'seg_cols_spin') else 1
-            result, err = self._prepare_segment_cells(parent_layer, rows, cols, hex_m)
+            equal_offsets = self._current_equal_offsets()
+            result, err = self._prepare_segment_cells(parent_layer, rows_input, cols_input, hex_m, equal_offsets)
         if err:
+            self._remove_segment_preview(parent_layer)
             self.log(err)
             return
 
         result = result or {}
+        self._remove_segment_preview(parent_layer)
+
         cells = result.get('cells', [])
         if not cells:
             self.log('No segments were created for the selected AOI.')
             return
 
+        actual_rows = int(result.get('rows') or 0)
+        actual_cols = int(result.get('cols') or 0)
+        if actual_rows <= 0:
+            actual_rows = len({cell['row'] for cell in cells})
+        if actual_cols <= 0:
+            actual_cols = len({cell['col'] for cell in cells})
+
         if mode == 'map_tile':
-            rows = int(result.get('rows') or 0)
-            cols = int(result.get('cols') or 0)
-            if rows <= 0:
-                rows = len({cell['row'] for cell in cells})
-            if cols <= 0:
-                cols = len({cell['col'] for cell in cells})
+            requested_rows = actual_rows
+            requested_cols = actual_cols
             scale_key = result.get('scale_key') or 'map_tiles'
-            alignment = result.get('alignment') or 'extent'
-            subdir_name = result.get('subdir') or f"MapTiles_{self._safe_filename(scale_key)}_{alignment}"
+            scale_label = result.get('scale_label') or ''
+            alignment_label = result.get('alignment') or 'extent'
+            subdir_name = result.get('subdir') or f"MapTiles_{self._safe_filename(scale_key)}_{alignment_label}"
             seg_dir = os.path.join(base_seg_dir, subdir_name)
         else:
-            rows = max(1, int(self.seg_rows_spin.value())) if hasattr(self, 'seg_rows_spin') else 1
-            cols = max(1, int(self.seg_cols_spin.value())) if hasattr(self, 'seg_cols_spin') else 1
-            alignment = 'equal'
+            requested_rows = max(1, int(result.get('requested_rows') or rows_input))
+            requested_cols = max(1, int(result.get('requested_cols') or cols_input))
+            actual_rows = max(1, actual_rows or requested_rows)
+            actual_cols = max(1, actual_cols or requested_cols)
+            scale_key = ''
+            scale_label = ''
+            alignment_label = 'equal'
             subdir_name = ''
             seg_dir = base_seg_dir
+            self._log_equal_grid_adjustments(result, context='segments')
 
-        self._remove_segment_preview(parent_layer)
         self._remove_segment_layers(parent_layer, seg_dir)
         shutil.rmtree(seg_dir, ignore_errors=True)
         os.makedirs(seg_dir, exist_ok=True)
@@ -641,9 +741,7 @@ class SegmentationMixin:
         group = self._ensure_segments_group(parent_layer)
         created_layers = []
         segment_names = []
-        scale_key = result.get('scale_key') if mode == 'map_tile' else ''
-        scale_label = result.get('scale_label') if mode == 'map_tile' else ''
-        alignment = result.get('alignment') if mode == 'map_tile' else 'equal'
+        segment_alignment = alignment_label
 
         for cell in cells:
             seg_geom = cell['geometry']
@@ -673,7 +771,7 @@ class SegmentationMixin:
             feat.setAttribute('col', col_num)
             feat.setAttribute('name', seg_name)
             feat.setAttribute('scale', scale_key if mode == 'map_tile' else '')
-            feat.setAttribute('align', alignment if mode == 'map_tile' else 'equal')
+            feat.setAttribute('align', segment_alignment)
             feat.setGeometry(seg_geom)
             writer.addFeature(feat)
             del writer
@@ -706,17 +804,21 @@ class SegmentationMixin:
         key = self._metadata_key_for_layer(parent_layer)
         metadata_entry = {
             'parent': parent_layer.name(),
-            'rows': rows,
-            'cols': cols,
+            'rows': actual_rows,
+            'cols': actual_cols,
             'segments': segment_names,
             'mode': mode,
-            'alignment': alignment,
+            'alignment': alignment_label,
         }
+        if mode == 'equal':
+            metadata_entry['equal_offsets'] = result.get('equal_offsets')
+            metadata_entry['requested_rows'] = requested_rows
+            metadata_entry['requested_cols'] = requested_cols
         if mode == 'map_tile':
             metadata_entry.update({
                 'scale': scale_key,
                 'scale_label': scale_label,
-                'alignment': alignment,
+                'alignment': alignment_label,
                 'offsets': result.get('offsets'),
                 'origin': result.get('origin'),
                 'tile_width_km': result.get('tile_width_km'),
@@ -730,9 +832,12 @@ class SegmentationMixin:
         self._populate_aoi_combo()
         if mode == 'map_tile':
             label = scale_label or scale_key or 'map tiles'
-            self.log(f"Created {len(created_layers)} map tiles ({label}) for {parent_layer.name()} aligned to {alignment} grid.")
+            self.log(f"Created {len(created_layers)} map tiles ({label}) for {parent_layer.name()} aligned to {alignment_label} grid.")
         else:
-            self.log(f"Created {len(created_layers)} segments for {parent_layer.name()} in {rows}x{cols} grid.")
+            message = f"Created {len(created_layers)} segments for {parent_layer.name()} in {actual_rows}x{actual_cols} grid."
+            if (actual_rows, actual_cols) != (requested_rows, requested_cols):
+                message += f" (requested {requested_rows}x{requested_cols})"
+            self.log(message)
 
     def clear_segments_for_selected_aoi(self):
         parent_layer = self._selected_aoi_layer_for_segmentation()

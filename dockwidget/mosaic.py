@@ -80,20 +80,11 @@ class MosaicPaletteMixin:
         self._load_mosaic_profile()
         self._load_style_catalog()
         self._mosaic_updating = False
-        self._mosaic_class_state: Dict[str, dict] = {
-            cls.class_id: {
-                "polygons": set(),
-                "lines": set(),
-                "area_threshold": self._DEFAULT_AREA_THRESHOLD,
-                "line_buffer": self._DEFAULT_LINE_BUFFER_M,
-                "line_step": self._DEFAULT_LINE_STEP_M,
-            }
-            for cls in self._mosaic_classes.values()
-        }
+        self._mosaic_class_state = {}
+        self._layer_processing_rows = {}
 
         description = QtWidgets.QLabel(
-            "Automate Hex Mosaic palette layers from imported OSM data or start fresh "
-            "manual layers using the game styles."
+            "Convert source layers into fixed project layers using Hex Tiles, with per-layer filters and snapping."
         )
         description.setWordWrap(True)
         parent_layout.addWidget(description)
@@ -102,113 +93,162 @@ class MosaicPaletteMixin:
         self.cbo_mosaic_hex_layer = QtWidgets.QComboBox()
         self.cbo_mosaic_hex_layer.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
         btn_refresh = QtWidgets.QPushButton("Refresh Layers")
-        row_hex.addWidget(QtWidgets.QLabel("Hex layer:"))
+        row_hex.addWidget(QtWidgets.QLabel("Hex tiles:"))
         row_hex.addWidget(self.cbo_mosaic_hex_layer, 1)
         row_hex.addWidget(btn_refresh, 0)
         parent_layout.addLayout(row_hex)
 
-        body_layout = QtWidgets.QHBoxLayout()
-        parent_layout.addLayout(body_layout)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_host = QtWidgets.QWidget()
+        scroll_layout = QtWidgets.QVBoxLayout(scroll_host)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(8)
+        scroll.setWidget(scroll_host)
+        parent_layout.addWidget(scroll, 1)
 
+        class_ids = getattr(self, "_mosaic_class_order", list(self._mosaic_classes.keys()))
+        for class_id in class_ids:
+            cls = self._mosaic_classes.get(class_id)
+            if not cls:
+                continue
+            state = self._class_state(class_id)
 
-        class_container = QtWidgets.QVBoxLayout()
-        body_layout.addLayout(class_container, 1)
+            group = QtWidgets.QGroupBox(f"{cls.class_id} -> {cls.target_layer}")
+            form = QtWidgets.QFormLayout(group)
+            form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
-        self.chk_mosaic_select_all = QtWidgets.QCheckBox('Select All')
-        self.chk_mosaic_select_all.setTristate(True)
-        self.chk_mosaic_select_all.stateChanged.connect(self._on_select_all_toggled)
-        class_container.addWidget(self.chk_mosaic_select_all)
+            source_combo = QtWidgets.QComboBox()
+            source_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
+            form.addRow("Source layer:", source_combo)
 
-        self.lst_mosaic_classes = QtWidgets.QListWidget()
-        self.lst_mosaic_classes.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        self.lst_mosaic_classes.setAlternatingRowColors(True)
-        self.lst_mosaic_classes.itemChanged.connect(self._on_class_check_changed)
-        self.lst_mosaic_classes.currentItemChanged.connect(self._on_class_selection_changed)
-        class_container.addWidget(self.lst_mosaic_classes, 1)
+            target_label = QtWidgets.QLabel(cls.target_layer)
+            form.addRow("Project layer:", target_label)
 
-        self._mosaic_detail_widget = QtWidgets.QWidget()
-        detail_layout = QtWidgets.QFormLayout(self._mosaic_detail_widget)
-        detail_layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-        body_layout.addWidget(self._mosaic_detail_widget, 2)
+            style_text = self._style_catalog.get(cls.target_layer, ("", ""))[1] if hasattr(self, "_style_catalog") else ""
+            style_label = QtWidgets.QLabel(style_text or "(no preset)")
+            form.addRow("Style:", style_label)
 
-        self.lbl_mosaic_class = QtWidgets.QLabel("�")
-        detail_layout.addRow("Class:", self.lbl_mosaic_class)
+            min_area_spin = None
+            buffer_spin = None
+            dissolve_chk = None
+            snap_combo = None
+            line_buffer_spin = None
+            line_step_spin = None
 
-        self.lbl_mosaic_style = QtWidgets.QLabel("�")
-        detail_layout.addRow("Style preset:", self.lbl_mosaic_style)
+            if cls.mode == "polygon":
+                min_area_spin = QtWidgets.QDoubleSpinBox()
+                min_area_spin.setRange(0.0, 1_000_000_000.0)
+                min_area_spin.setDecimals(1)
+                min_area_spin.setSingleStep(100.0)
+                min_area_spin.setSuffix(" m^2")
+                min_area_spin.setValue(float(state.get("min_area_m2", 0.0)))
+                form.addRow("Min area:", min_area_spin)
 
-        self.lst_mosaic_polygons = QtWidgets.QListWidget()
-        self.lst_mosaic_polygons.setAlternatingRowColors(True)
-        self.lst_mosaic_polygons.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
-        self.lst_mosaic_polygons.itemChanged.connect(self._on_polygon_layer_toggled)
-        detail_layout.addRow("Polygon layers:", self.lst_mosaic_polygons)
+                buffer_spin = QtWidgets.QDoubleSpinBox()
+                buffer_spin.setRange(-5000.0, 5000.0)
+                buffer_spin.setDecimals(1)
+                buffer_spin.setSingleStep(5.0)
+                buffer_spin.setSuffix(" m")
+                buffer_spin.setValue(float(state.get("shape_buffer_m", 0.0)))
+                form.addRow("Shape buffer:", buffer_spin)
 
-        self.lst_mosaic_lines = QtWidgets.QListWidget()
-        self.lst_mosaic_lines.setAlternatingRowColors(True)
-        self.lst_mosaic_lines.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
-        self.lst_mosaic_lines.itemChanged.connect(self._on_line_layer_toggled)
-        detail_layout.addRow("Line layers:", self.lst_mosaic_lines)
+                dissolve_chk = QtWidgets.QCheckBox("Dissolve output")
+                dissolve_chk.setChecked(bool(state.get("dissolve", True)))
+                form.addRow("", dissolve_chk)
+            else:
+                snap_combo = QtWidgets.QComboBox()
+                snap_combo.addItem("None", "none")
+                snap_combo.addItem("Centroid", "center")
+                snap_combo.addItem("Edge", "edge")
+                snap_mode = state.get("snap_mode", cls.line_behavior or "center")
+                idx = snap_combo.findData(snap_mode if snap_mode in ("none", "center", "edge") else "center")
+                if idx >= 0:
+                    snap_combo.setCurrentIndex(idx)
+                form.addRow("Snap mode:", snap_combo)
 
-        self.dsb_mosaic_area_threshold = QtWidgets.QDoubleSpinBox()
-        self.dsb_mosaic_area_threshold.setRange(0.0, 1.0)
-        self.dsb_mosaic_area_threshold.setDecimals(2)
-        self.dsb_mosaic_area_threshold.setSingleStep(0.05)
-        self.dsb_mosaic_area_threshold.valueChanged.connect(self._on_area_threshold_changed)
-        detail_layout.addRow("Area threshold:", self.dsb_mosaic_area_threshold)
+                line_buffer_spin = QtWidgets.QDoubleSpinBox()
+                line_buffer_spin.setRange(0.0, 1000.0)
+                line_buffer_spin.setDecimals(1)
+                line_buffer_spin.setSingleStep(5.0)
+                line_buffer_spin.setSuffix(" m")
+                line_buffer_spin.setValue(float(state.get("line_buffer", self._DEFAULT_LINE_BUFFER_M)))
+                form.addRow("Line buffer:", line_buffer_spin)
 
-        self.dsb_mosaic_line_buffer = QtWidgets.QDoubleSpinBox()
-        self.dsb_mosaic_line_buffer.setRange(0.0, 1000.0)
-        self.dsb_mosaic_line_buffer.setSuffix(" m")
-        self.dsb_mosaic_line_buffer.setDecimals(1)
-        self.dsb_mosaic_line_buffer.setSingleStep(5.0)
-        self.dsb_mosaic_line_buffer.valueChanged.connect(self._on_line_buffer_changed)
-        detail_layout.addRow("Line buffer:", self.dsb_mosaic_line_buffer)
+                line_step_spin = QtWidgets.QDoubleSpinBox()
+                line_step_spin.setRange(1.0, 1000.0)
+                line_step_spin.setDecimals(1)
+                line_step_spin.setSingleStep(10.0)
+                line_step_spin.setSuffix(" m")
+                line_step_spin.setValue(float(state.get("line_step", self._DEFAULT_LINE_STEP_M)))
+                form.addRow("Sampling step:", line_step_spin)
 
-        self.dsb_mosaic_line_step = QtWidgets.QDoubleSpinBox()
-        self.dsb_mosaic_line_step.setRange(1.0, 1000.0)
-        self.dsb_mosaic_line_step.setDecimals(1)
-        self.dsb_mosaic_line_step.setSingleStep(10.0)
-        self.dsb_mosaic_line_step.setSuffix(" m")
-        self.dsb_mosaic_line_step.valueChanged.connect(self._on_line_step_changed)
-        detail_layout.addRow("Sampling step:", self.dsb_mosaic_line_step)
+            btn_convert = QtWidgets.QPushButton("Convert")
+            form.addRow(btn_convert)
 
-        row_buttons = QtWidgets.QHBoxLayout()
-        self.btn_mosaic_apply_style = QtWidgets.QPushButton("Apply Style to Sources")
-        self.btn_mosaic_manual_layer = QtWidgets.QPushButton("Create Manual Layer")
-        row_buttons.addWidget(self.btn_mosaic_apply_style)
-        row_buttons.addWidget(self.btn_mosaic_manual_layer)
-        detail_layout.addRow(row_buttons)
+            self._layer_processing_rows[class_id] = {
+                "group": group,
+                "class": cls,
+                "source_combo": source_combo,
+                "target_label": target_label,
+                "style_label": style_label,
+                "min_area_spin": min_area_spin,
+                "buffer_spin": buffer_spin,
+                "dissolve_chk": dissolve_chk,
+                "snap_combo": snap_combo,
+                "line_buffer_spin": line_buffer_spin,
+                "line_step_spin": line_step_spin,
+                "convert_btn": btn_convert,
+            }
 
-        row_detect = QtWidgets.QHBoxLayout()
-        self.btn_mosaic_detect_class = QtWidgets.QPushButton("Detect Class (Hex)")
-        self.btn_mosaic_clone_sources = QtWidgets.QPushButton("Clone Sources")
-        row_detect.addWidget(self.btn_mosaic_detect_class)
-        row_detect.addWidget(self.btn_mosaic_clone_sources)
-        detail_layout.addRow(row_detect)
+            source_combo.currentIndexChanged.connect(
+                lambda *_,
+                cid=class_id: self._on_layer_processing_source_changed(cid)
+            )
+            if min_area_spin is not None:
+                min_area_spin.valueChanged.connect(
+                    lambda v, cid=class_id: self._on_layer_processing_min_area_changed(cid, v)
+                )
+            if buffer_spin is not None:
+                buffer_spin.valueChanged.connect(
+                    lambda v, cid=class_id: self._on_layer_processing_buffer_changed(cid, v)
+                )
+            if dissolve_chk is not None:
+                dissolve_chk.toggled.connect(
+                    lambda v, cid=class_id: self._on_layer_processing_dissolve_changed(cid, v)
+                )
+            if snap_combo is not None:
+                snap_combo.currentIndexChanged.connect(
+                    lambda *_,
+                    cid=class_id: self._on_layer_processing_snap_changed(cid)
+                )
+            if line_buffer_spin is not None:
+                line_buffer_spin.valueChanged.connect(
+                    lambda v, cid=class_id: self._on_layer_processing_line_buffer_changed(cid, v)
+                )
+            if line_step_spin is not None:
+                line_step_spin.valueChanged.connect(
+                    lambda v, cid=class_id: self._on_layer_processing_line_step_changed(cid, v)
+                )
+            btn_convert.clicked.connect(
+                lambda *_,
+                cid=class_id: self._run_layer_processing_class(cid)
+            )
 
-        parent_layout.addSpacing(12)
-        bottom_row = QtWidgets.QHBoxLayout()
-        parent_layout.addLayout(bottom_row)
-        self.btn_mosaic_run_selected = QtWidgets.QPushButton("Generate Selected Classes")
-        self.btn_mosaic_run_all = QtWidgets.QPushButton("Generate All Classes")
-        bottom_row.addWidget(self.btn_mosaic_run_selected)
-        bottom_row.addWidget(self.btn_mosaic_run_all)
-        bottom_row.addStretch(1)
+            scroll_layout.addWidget(group)
 
-        parent_layout.addStretch(1)
+        scroll_layout.addStretch(1)
 
-        btn_refresh.clicked.connect(self._populate_mosaic_inputs)
-        self.btn_mosaic_apply_style.clicked.connect(self._apply_style_to_selected_sources)
-        self.btn_mosaic_manual_layer.clicked.connect(self._create_manual_layer)
-        self.btn_mosaic_detect_class.clicked.connect(self._detect_current_class)
-        self.btn_mosaic_clone_sources.clicked.connect(self._clone_selected_sources)
-        self.btn_mosaic_run_selected.clicked.connect(lambda: self._run_mosaic_automation(checked_only=True))
-        self.btn_mosaic_run_all.clicked.connect(lambda: self._run_mosaic_automation(checked_only=False))
+        row_actions = QtWidgets.QHBoxLayout()
+        self.btn_mosaic_run_all = QtWidgets.QPushButton("Convert All Layers")
+        row_actions.addWidget(self.btn_mosaic_run_all)
+        row_actions.addStretch(1)
+        parent_layout.addLayout(row_actions)
 
-        self._populate_mosaic_inputs()
-        if self.lst_mosaic_classes.count():
-            self.lst_mosaic_classes.setCurrentRow(0)
+        btn_refresh.clicked.connect(self._populate_layer_processing_inputs)
+        self.btn_mosaic_run_all.clicked.connect(self._run_layer_processing_all)
 
+        self._populate_layer_processing_inputs()
     # ------------------------------------------------------------------
     # Profile & style loading
 
@@ -222,6 +262,7 @@ class MosaicPaletteMixin:
             self.log(f"Mosaic: failed to read profile -> {exc}")
             profile = {}
         classes = {}
+        order: List[str] = []
         for entry in profile.get("classes", []):
             class_id = entry.get("id")
             target = entry.get("target_layer")
@@ -238,7 +279,10 @@ class MosaicPaletteMixin:
                 matchers=entry.get("match", []),
                 line_behavior=line_behavior,
             )
+            order.append(class_id)
         self._mosaic_classes: Dict[str, MosaicClass] = classes
+        self._target_to_class: Dict[str, MosaicClass] = {cls.target_layer: cls for cls in classes.values()}
+        self._mosaic_class_order = order
 
     def _load_style_catalog(self) -> None:
         if hasattr(self, "_style_catalog"):
@@ -262,13 +306,167 @@ class MosaicPaletteMixin:
 
     # UI state helpers
 
+    def _populate_layer_processing_inputs(self) -> None:
+        try:
+            hex_layers = self._gather_hex_layers()
+            prev_hex = self.cbo_mosaic_hex_layer.currentData() if self.cbo_mosaic_hex_layer.count() else None
+            self.cbo_mosaic_hex_layer.blockSignals(True)
+            self.cbo_mosaic_hex_layer.clear()
+            for layer in hex_layers:
+                self.cbo_mosaic_hex_layer.addItem(layer.name(), layer.id())
+            if prev_hex:
+                idx = self.cbo_mosaic_hex_layer.findData(prev_hex)
+                if idx >= 0:
+                    self.cbo_mosaic_hex_layer.setCurrentIndex(idx)
+            self.cbo_mosaic_hex_layer.blockSignals(False)
+        except Exception:
+            pass
+
+        vector_layers = [
+            layer for layer in QgsProject.instance().mapLayers().values()
+            if isinstance(layer, QgsVectorLayer)
+        ]
+
+        for class_id, row in getattr(self, "_layer_processing_rows", {}).items():
+            cls = row.get("class")
+            combo = row.get("source_combo")
+            if not cls or combo is None:
+                continue
+            expected_geom = QgsWkbTypes.PolygonGeometry if cls.mode == "polygon" else QgsWkbTypes.LineGeometry
+            candidates = [
+                layer for layer in vector_layers
+                if QgsWkbTypes.geometryType(layer.wkbType()) == expected_geom
+            ]
+            prev_id = combo.currentData() if combo.count() else None
+
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("(none)", "")
+            for layer in candidates:
+                combo.addItem(layer.name(), layer.id())
+
+            state = self._class_state(class_id)
+            if cls.mode == "line" and not state.get("snap_mode"):
+                state["snap_mode"] = "edge" if cls.line_behavior == "edge" else "center"
+            selected_ids = list(self._ensure_id_set(state, "polygons" if cls.mode == "polygon" else "lines"))
+            selected_id = selected_ids[0] if selected_ids else ""
+
+            chosen_id = ""
+            if prev_id:
+                chosen_id = prev_id
+            elif selected_id:
+                chosen_id = selected_id
+            else:
+                default_id = self._default_source_layer_id(cls, candidates)
+                chosen_id = default_id or ""
+
+            if chosen_id:
+                idx = combo.findData(chosen_id)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                    self._set_layer_processing_source_id(class_id, chosen_id)
+            combo.blockSignals(False)
+
+    def _default_source_layer_id(self, cls: MosaicClass, candidates: Sequence[QgsVectorLayer]) -> str:
+        hints = self._DEFAULT_LAYER_HINTS.get(cls.class_id, {})
+        if cls.mode == "polygon":
+            lookups = hints.get("polygons", [])
+        else:
+            lookups = hints.get("lines", [])
+        for layer in candidates:
+            if any(self._layer_matches_hint(layer, hint) for hint in lookups):
+                return layer.id()
+        return ""
+
+    def _set_layer_processing_source_id(self, class_id: str, layer_id: str) -> None:
+        state = self._class_state(class_id)
+        key = "polygons" if self._mosaic_classes[class_id].mode == "polygon" else "lines"
+        id_set = self._ensure_id_set(state, key)
+        id_set.clear()
+        if layer_id:
+            id_set.add(layer_id)
+
+    def _on_layer_processing_source_changed(self, class_id: str) -> None:
+        row = self._layer_processing_rows.get(class_id, {})
+        combo = row.get("source_combo")
+        if combo is None:
+            return
+        layer_id = combo.currentData() or ""
+        self._set_layer_processing_source_id(class_id, str(layer_id))
+
+    def _on_layer_processing_min_area_changed(self, class_id: str, value: float) -> None:
+        state = self._class_state(class_id)
+        state["min_area_m2"] = float(value)
+
+    def _on_layer_processing_buffer_changed(self, class_id: str, value: float) -> None:
+        state = self._class_state(class_id)
+        state["shape_buffer_m"] = float(value)
+
+    def _on_layer_processing_dissolve_changed(self, class_id: str, value: bool) -> None:
+        state = self._class_state(class_id)
+        state["dissolve"] = bool(value)
+
+    def _on_layer_processing_snap_changed(self, class_id: str) -> None:
+        row = self._layer_processing_rows.get(class_id, {})
+        combo = row.get("snap_combo")
+        if combo is None:
+            return
+        state = self._class_state(class_id)
+        state["snap_mode"] = combo.currentData()
+
+    def _on_layer_processing_line_buffer_changed(self, class_id: str, value: float) -> None:
+        state = self._class_state(class_id)
+        state["line_buffer"] = float(value)
+
+    def _on_layer_processing_line_step_changed(self, class_id: str, value: float) -> None:
+        state = self._class_state(class_id)
+        state["line_step"] = float(value)
+
+    def _run_layer_processing_all(self) -> None:
+        class_ids = getattr(self, "_mosaic_class_order", list(self._mosaic_classes.keys()))
+        hex_layer = self._resolve_hex_layer()
+        if hex_layer is None:
+            self.log("Layer processing: choose a Hex Tiles layer first.")
+            return
+        cache = _HexCache(hex_layer)
+        for class_id in class_ids:
+            self._run_layer_processing_class(class_id, hex_layer, cache)
+
+    def _run_layer_processing_class(self, class_id: str, hex_layer: Optional[QgsVectorLayer] = None,
+                                    cache: Optional["_HexCache"] = None) -> None:
+        cls = self._mosaic_classes.get(class_id)
+        if not cls:
+            return
+        if hex_layer is None:
+            hex_layer = self._resolve_hex_layer()
+        if hex_layer is None:
+            self.log("Layer processing: choose a Hex Tiles layer first.")
+            return
+        if cache is None:
+            cache = _HexCache(hex_layer)
+        state = self._class_state(class_id)
+        vector_layers = [
+            layer for layer in QgsProject.instance().mapLayers().values()
+            if isinstance(layer, QgsVectorLayer)
+        ]
+        self._prune_missing_sources(state, vector_layers)
+        if cls.mode == "polygon":
+            output = self._generate_polygon_class(hex_layer, cache, cls, state)
+        else:
+            output = self._generate_line_class(hex_layer, cache, cls, state)
+        if not output:
+            self.log(f"Layer processing: no output generated for {cls.class_id}.")
+
     def _class_state(self, class_id: str) -> dict:
         state = self._mosaic_class_state.setdefault(
             class_id,
             {
                 "polygons": set(),
                 "lines": set(),
-                "area_threshold": self._DEFAULT_AREA_THRESHOLD,
+                "min_area_m2": 0.0,
+                "shape_buffer_m": 0.0,
+                "dissolve": True,
+                "snap_mode": "center",
                 "line_buffer": self._DEFAULT_LINE_BUFFER_M,
                 "line_step": self._DEFAULT_LINE_STEP_M,
             },
@@ -379,9 +577,19 @@ class MosaicPaletteMixin:
                 if isinstance(lyr, QgsVectorLayer)
             ]
             self._prime_default_sources(vector_layers)
-            for layer in vector_layers:
-                if QgsWkbTypes.geometryType(layer.wkbType()) == QgsWkbTypes.PolygonGeometry:
-                    self.cbo_mosaic_hex_layer.addItem(layer.name(), layer.id())
+            hex_candidates = [
+                layer
+                for layer in vector_layers
+                if QgsWkbTypes.geometryType(layer.wkbType()) == QgsWkbTypes.PolygonGeometry
+                and "hex" in layer.name().lower()
+            ]
+            sources_for_combo = hex_candidates or [
+                layer
+                for layer in vector_layers
+                if QgsWkbTypes.geometryType(layer.wkbType()) == QgsWkbTypes.PolygonGeometry
+            ]
+            for layer in sources_for_combo:
+                self.cbo_mosaic_hex_layer.addItem(layer.name(), layer.id())
             if current_hex:
                 idx = self.cbo_mosaic_hex_layer.findData(current_hex)
                 if idx >= 0:
@@ -821,10 +1029,17 @@ class MosaicPaletteMixin:
         if not polygon_layers:
             self.log(f"Mosaic: class '{cls.class_id}' skipped (no polygon sources selected).")
             return None
-        sources = self._prepare_polygon_sources(polygon_layers, hex_layer.crs())
+        min_area = float(state.get("min_area_m2", 0.0))
+        buffer_m = float(state.get("shape_buffer_m", 0.0))
+        sources = self._prepare_polygon_sources(polygon_layers, hex_layer.crs(), min_area, buffer_m)
         if not sources:
             self.log(f"Mosaic: class '{cls.class_id}' has no usable polygon geometries after reprojection.")
             return None
+
+        higher_layers, lower_layers = self._collect_conflict_layers(cls, QgsWkbTypes.PolygonGeometry)
+        higher_keys = self._collect_feature_keys(higher_layers)
+        skipped_for_priority = 0
+        new_keys: Set[bytes] = set()
 
         mem = QgsVectorLayer(f"Polygon?crs={hex_layer.crs().authid()}", cls.target_layer, "memory")
         provider = mem.dataProvider()
@@ -862,13 +1077,61 @@ class MosaicPaletteMixin:
             ])
             out_feat = QgsFeature(fields)
             out_feat.setGeometry(geom)
+            key = self._hex_feature_key(out_feat)
+            if key and key in higher_keys:
+                skipped_for_priority += 1
+                continue
             out_feat.setAttributes(new_attrs)
             provider.addFeature(out_feat)
+            if key:
+                new_keys.add(key)
             total += 1
 
+        removed_info = self._remove_conflicting_lower_layers(new_keys, lower_layers)
+        if skipped_for_priority:
+            self.log(f"Mosaic: {cls.class_id} skipped {skipped_for_priority} tile(s) already owned by higher-priority classes.")
+        for layer_name, removed_count, other_cls in removed_info:
+            self.log(f"Mosaic: removed {removed_count} tile(s) from {layer_name} ({other_cls.class_id}) due to {cls.class_id}.")
+
         if total == 0:
-            self.log(f"Mosaic: class '{cls.class_id}' -> no tiles intersect selected sources.")
+            self.log(f"Mosaic: class '{cls.class_id}' -> no tiles intersect selected sources after resolving conflicts.")
             return None
+
+        if bool(state.get("dissolve", False)):
+            dissolved = QgsGeometry.unaryUnion([f.geometry() for f in mem.getFeatures() if f.geometry()])
+            if dissolved is None or dissolved.isEmpty():
+                self.log(f"Mosaic: class '{cls.class_id}' -> dissolve produced no geometry.")
+                return None
+            dissolved_layer = QgsVectorLayer(f"Polygon?crs={hex_layer.crs().authid()}", cls.target_layer, "memory")
+            provider_d = dissolved_layer.dataProvider()
+            provider_d.addAttributes(mem.fields())
+            dissolved_layer.updateFields()
+
+            out_feat = QgsFeature(dissolved_layer.fields())
+            out_feat.setGeometry(dissolved)
+            attrs = [None] * len(dissolved_layer.fields())
+            try:
+                class_idx = dissolved_layer.fields().indexOf("class_id")
+                if class_idx >= 0:
+                    attrs[class_idx] = cls.class_id
+            except Exception:
+                pass
+            try:
+                source_idx = dissolved_layer.fields().indexOf("source_layers")
+                if source_idx >= 0:
+                    attrs[source_idx] = ";".join(sorted(layer.name() for layer in polygon_layers))
+            except Exception:
+                pass
+            try:
+                coverage_idx = dissolved_layer.fields().indexOf("coverage")
+                if coverage_idx >= 0:
+                    attrs[coverage_idx] = 1.0
+            except Exception:
+                pass
+            out_feat.setAttributes(attrs)
+            provider_d.addFeature(out_feat)
+            dissolved_layer.updateExtents()
+            mem = dissolved_layer
 
         base_label = self._mosaic_base_label(hex_layer)
         file_stem = self._compose_mosaic_file_stem(base_label, cls.target_layer)
@@ -886,7 +1149,6 @@ class MosaicPaletteMixin:
         rel = os.path.relpath(shp_path, self._project_root()) if self._project_root() else shp_path
         self.log(f"Mosaic: {cls.class_id} -> {total} tiles, saved to {rel}.")
         return layer
-
     def _generate_line_class(self, hex_layer: QgsVectorLayer, cache: "_HexCache", cls: MosaicClass, state: dict):
         line_layers = self._resolve_layers(state.get("lines", set()), QgsWkbTypes.LineGeometry)
         if not line_layers:
@@ -894,6 +1156,7 @@ class MosaicPaletteMixin:
             return None
         buffer_dist = float(state.get("line_buffer", self._DEFAULT_LINE_BUFFER_M))
         step_dist = float(state.get("line_step", self._DEFAULT_LINE_STEP_M))
+        snap_mode = str(state.get("snap_mode", cls.line_behavior or "center"))
         target_crs = hex_layer.crs()
         transform_context = QgsProject.instance().transformContext()
 
@@ -915,11 +1178,14 @@ class MosaicPaletteMixin:
                 geom = geom.makeValid()
                 if geom.isEmpty() or geom.type() != QgsWkbTypes.LineGeometry:
                     continue
-                if buffer_dist > 0 and cls.line_behavior == "edge":
-                    buffered = geom.buffer(buffer_dist, 8)
+                if snap_mode == "none":
+                    path_geom = geom
                 else:
                     buffered = None
-                path_geom = cache.trace_line(geom, cls.line_behavior or "center_to_edge", buffered, step_dist)
+                    if buffer_dist > 0 and snap_mode == "edge":
+                        buffered = geom.buffer(buffer_dist, 8)
+                    behavior = "edge" if snap_mode == "edge" else "center"
+                    path_geom = cache.trace_line(geom, behavior, buffered, step_dist)
                 if path_geom is not None and not path_geom.isEmpty():
                     pieces.append(path_geom)
 
@@ -1005,6 +1271,8 @@ class MosaicPaletteMixin:
         self,
         layers: Sequence[QgsVectorLayer],
         target_crs: QgsCoordinateReferenceSystem,
+        min_area_m2: float = 0.0,
+        shape_buffer_m: float = 0.0,
     ) -> List[Tuple[List[QgsGeometry], QgsSpatialIndex]]:
         sources: List[Tuple[List[QgsGeometry], QgsSpatialIndex]] = []
         transform_context = QgsProject.instance().transformContext()
@@ -1026,6 +1294,15 @@ class MosaicPaletteMixin:
                     continue
                 geom = geom.makeValid()
                 if geom.isEmpty() or geom.type() != QgsWkbTypes.PolygonGeometry:
+                    continue
+                if shape_buffer_m:
+                    try:
+                        geom = geom.buffer(float(shape_buffer_m), 8)
+                    except Exception:
+                        continue
+                    if geom is None or geom.isEmpty():
+                        continue
+                if min_area_m2 > 0 and geom.area() < min_area_m2:
                     continue
                 fid = len(geoms)
                 tmp = QgsFeature(fid)
@@ -1232,6 +1509,105 @@ class MosaicPaletteMixin:
     def _compose_mosaic_file_stem(*parts: str) -> str:
         pieces = [p for p in parts if p]
         return "_".join(pieces).strip("_")
+
+    def _target_from_layer_name(self, layer_name: str) -> Optional[str]:
+        name = layer_name.strip()
+        if name in getattr(self, "_target_to_class", {}):
+            return name
+        for suffix in ("_manual", "_clone"):
+            if name.endswith(suffix):
+                base = name[: -len(suffix)]
+                if base in self._target_to_class:
+                    return base
+        return None
+
+    def _collect_mosaic_layers(self, geometry_type: int, exclude_layer_id: str = ""):
+        layers = []
+        project = QgsProject.instance()
+        mosaic_dir = os.path.normcase(os.path.abspath(self._layers_mosaic_dir()))
+        for layer in project.mapLayers().values():
+            if not isinstance(layer, QgsVectorLayer):
+                continue
+            if layer.id() == exclude_layer_id:
+                continue
+            if QgsWkbTypes.geometryType(layer.wkbType()) != geometry_type:
+                continue
+            target_name = self._target_from_layer_name(layer.name())
+            if not target_name:
+                continue
+            cls = self._target_to_class.get(target_name)
+            if cls is None:
+                continue
+            source = layer.source().split('|', 1)[0]
+            if source:
+                try:
+                    if not os.path.normcase(os.path.abspath(source)).startswith(mosaic_dir):
+                        continue
+                except Exception:
+                    continue
+            layers.append((layer, cls))
+        return layers
+
+    def _collect_conflict_layers(self, cls: MosaicClass, geometry_type: int):
+        higher_layers = []
+        lower_layers = []
+        for layer, other_cls in self._collect_mosaic_layers(geometry_type):
+            if other_cls.target_layer == cls.target_layer:
+                continue
+            if other_cls.priority > cls.priority:
+                higher_layers.append((layer, other_cls))
+            elif other_cls.priority < cls.priority:
+                lower_layers.append((layer, other_cls))
+        return higher_layers, lower_layers
+
+    def _collect_feature_keys(self, layers_info):
+        keys: Set[bytes] = set()
+        for layer, _ in layers_info:
+            for feat in layer.getFeatures():
+                key = self._hex_feature_key(feat)
+                if key:
+                    keys.add(key)
+        return keys
+
+    def _hex_feature_key(self, feature: QgsFeature) -> bytes:
+        geom = feature.geometry()
+        if geom is None or geom.isEmpty():
+            return b""
+        try:
+            return geom.asWkb()
+        except Exception:
+            return b""
+
+    def _remove_conflicting_lower_layers(self, new_keys: Set[bytes], layers_info):
+        removal_info = []
+        for layer, other_cls in layers_info:
+            ids_to_remove = []
+            for feat in layer.getFeatures():
+                if self._hex_feature_key(feat) in new_keys:
+                    ids_to_remove.append(feat.id())
+            if not ids_to_remove:
+                continue
+            owned_session = False
+            if not layer.isEditable():
+                owned_session = layer.startEditing()
+            provider = layer.dataProvider()
+            success = provider.deleteFeatures(ids_to_remove) if provider else False
+            if not success:
+                if owned_session:
+                    layer.rollBack()
+                self.log(f"Mosaic: failed to remove conflicts from {layer.name()}")
+                continue
+            if owned_session:
+                if not layer.commitChanges():
+                    layer.rollBack()
+                    self.log(f"Mosaic: failed to commit updates to {layer.name()}")
+                    continue
+            else:
+                layer.triggerRepaint()
+            if not layer.isEditable():
+                layer.triggerRepaint()
+            removal_info.append((layer.name(), len(ids_to_remove), other_cls))
+        return removal_info
 
     def _finalize_output_layer(self, layer: QgsVectorLayer, cls: MosaicClass, shp_path: str) -> None:
         proj = QgsProject.instance()

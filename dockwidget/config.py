@@ -94,4 +94,9 @@ class ConfigMixin:
             edit.setText(path)
         if self._widget_is_alive(source_label):
             source_label.setText(f"source: {source}")
+        if hasattr(self, "_sync_elevation_step_from_config"):
+            try:
+                self._sync_elevation_step_from_config()
+            except Exception:
+                pass
         self.log(f"Config loaded from {source}: {path}")
